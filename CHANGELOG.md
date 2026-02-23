@@ -2,6 +2,14 @@
 
 ---
 
+## 0.1.52
+
+### Added
+- New reusable `Button` component with variants and accessible styling.
+- Light/Dark theme switcher (`ThemeToggle`) with persistent preference (localStorage) and Tailwind `darkMode` support.
+- Updated UI to use consistent button design and added theme toggle in header.
+- Extended Tailwind config with `darkMode: 'class'` and dark palette variables.
+
 ## 0.1.51
 
 ### Fixed

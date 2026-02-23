@@ -1,5 +1,99 @@
 # Agent Instructions
 
+## Build and Test Commands
+
+### Available Commands
+- `pnpm test` or `node --test test/test.js` — Run all 62 tests across 11 suites
+- `pnpm start` or `node bin/free-coding-models.js` — Run CLI locally
+
+### Running Single Tests
+The test suite uses Node.js built-in `node:test` runner. To run a single test:
+- No built-in filtering in `node:test` for individual tests
+- Use `describe.only()` or `it.only()` temporarily in `test/test.js`
+- Example: Add `.only()` to a test line (e.g., `it.only('returns Infinity when no pings')`)
+- **Important**: Remove `.only()` before committing to ensure all tests pass
+
+## Code Style Guidelines
+
+### Imports and Modules
+- Use ES6 named imports: `import { readFileSync, writeFileSync } from 'fs'`
+- No CommonJS `require()` except for legacy `readline` in main CLI (requires `createRequire`)
+- Explicitly list imports in JSDoc `@imports` or `@exports` tags
+- Use full file paths with `.js` extension (ESM requirement)
+
+### JSDoc Documentation
+Every file must have JSDoc header at the top:
+```javascript
+/**
+ * @file filename.js
+ * @description Brief purpose statement.
+ *
+ * 📖 Detailed explanation of the module's role in the project.
+ *    Use 📖 emoji for explanatory comments.
+ *
+ * @functions
+ *   → functionOne — What it does
+ *   → functionTwo — What it does
+ *
+ * @exports exportOne, exportTwo
+ * @exports CONSTANT_ONE, CONSTANT_TWO
+ *
+ * @see related-file.js — Related modules
+ */
+```
+- List all functions with `→ function — description` format
+- Document exports with `@exports` tag
+- Include `@see` references to related files
+- Use `📖` emoji prefix for explanation markers in comments
+
+### Naming Conventions
+- Functions: `camelCase` (e.g., `getAvg`, `parseArgs`, `loadConfig`)
+- Constants: `UPPER_SNAKE_CASE` (e.g., `PING_TIMEOUT`, `TIER_ORDER`)
+- Variables: `camelCase`
+- Files: `lowercase-with-dashes.js` (e.g., `free-coding-models.js`, `utils.js`)
+
+### Type Safety
+- Use TypeScript-style JSDoc types: `@param {{ apiKeys: Record<string,string> }} config`
+- No actual TypeScript files — pure JS with JSDoc type annotations
+- Export constants used by tests (e.g., `TIER_ORDER`, `VERDICT_ORDER`) for type reference
+- Define expected object shapes in JSDoc `@description` sections
+
+### Pure Functions
+- Add pure logic to `lib/utils.js` (no side effects, no I/O, no `process.exit()`)
+- Avoid `console.log()` in utility functions
+- Makes functions trivially testable with `node:assert` without mocking
+- Main CLI (`bin/free-coding-models.js`) imports from `lib/utils.js`
+
+### Error Handling
+- Use try/catch for I/O operations (file reads/writes, JSON parsing)
+- Silent failures acceptable for config writes (app remains usable)
+- Return empty config/default values on parse failures
+- Never throw from utility functions in `lib/utils.js`
+- Log errors to user in main CLI, never in utility functions
+
+### Constants
+- Define at top of file with `📖` comment explaining purpose
+- Export constants used by tests (e.g., `TIER_ORDER`, `VERDICT_ORDER`)
+- Keep in sync with data definitions in `sources.js`
+- Use descriptive names with clear semantic meaning
+
+### File Organization
+```
+bin/
+  free-coding-models.js    — CLI entry point with shebang, imports from lib/
+lib/
+  utils.js                — Pure testable business logic (getAvg, sortResults, parseArgs, etc.)
+  config.js               — JSON config I/O (~/.free-coding-models.json)
+test/
+  test.js                — Unit tests using node:test + node:assert/strict
+sources.js               — Model definitions by provider (NIM, Groq, Cerebras)
+```
+
+### No Linting Tools
+- No ESLint, Prettier, or similar tools configured
+- Follow patterns established in existing code
+- Consistent style is maintained via conventions, not tool enforcement
+
 ## Post-Feature Testing
 
 After completing any feature or fix, the agent MUST:
@@ -28,9 +122,9 @@ When releasing a new version, follow this exact process:
    ```bash
    for i in $(seq 1 30); do sleep 10; v=$(npm view free-coding-models version 2>/dev/null); echo "Attempt $i: npm version = $v"; if [ "$v" = "0.1.17" ]; then echo "✅ published!"; break; fi; done
    ```
-5. **Install and Verify**: `npm install -g free-coding-models@0.1.17`
-6. **Test Binary**: `free-coding-models --help` (or any other command to verify it works)
-7. **Only when the global npm-installed version works → the release is confirmed**
+6. **Install and Verify**: `npm install -g free-coding-models@0.1.17`
+7. **Test Binary**: `free-coding-models --help` (or any other command to verify it works)
+8. **Only when the global npm-installed version works → the release is confirmed**
 
 **Why:** A local `npm install -g .` can mask issues because it symlinks the repo. The real npm package is a tarball built from the `files` field — only a real npm install will catch missing files.
 
