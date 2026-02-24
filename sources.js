@@ -27,8 +27,8 @@
  *   📖 Secondary: https://swe-rebench.com (independent evals, scores are lower)
  *   📖 Leaderboard tracker: https://www.marc0.dev/en/leaderboard
  *
- *   @exports nvidiaNim, groq, cerebras — model arrays per provider
- *   @exports sources — map of { nvidia, groq, cerebras } each with { name, url, models }
+ *   @exports nvidiaNim, groq, cerebras, openrouter, zai, ollama — model arrays per provider
+ *   @exports sources — map of { nvidia, groq, cerebras, openrouter, zai, ollama } each with { name, url, models }
  *   @exports MODELS — flat array of [modelId, label, tier, sweScore, ctx, providerKey]
  *
  *   📖 MODELS now includes providerKey as 6th element so ping() knows which
@@ -99,7 +99,6 @@ export const groq = [
   ['meta-llama/llama-4-maverick-17b-128e-preview', 'Llama 4 Maverick', 'S', '62.0%', '1M'],
   ['deepseek-r1-distill-llama-70b',        'R1 Distill 70B',     'A',  '43.9%', '128k'],
   ['qwen-qwq-32b',                         'QwQ 32B',            'A+', '50.0%', '131k'],
-  ['moonshotai/kimi-k2-instruct',          'Kimi K2 Instruct',   'S',  '65.8%', '131k'],
 ]
 
 // 📖 Cerebras source - https://cloud.cerebras.ai
@@ -108,6 +107,34 @@ export const cerebras = [
   ['llama3.3-70b',                         'Llama 3.3 70B',      'A-', '39.5%', '128k'],
   ['llama-4-scout-17b-16e-instruct',       'Llama 4 Scout',      'A',  '44.0%', '10M'],
   ['qwen-3-32b',                           'Qwen3 32B',          'A+', '50.0%', '128k'],
+]
+
+// 📖 OpenRouter source - https://openrouter.ai
+// 📖 API keys available at https://openrouter.ai/keys
+// 📖 Supports both free and paid models (pricing shown in model display)
+export const openrouter = [
+  ['arcee-ai/trinity-large-preview:free',     'Trinity Large',       'S',  '70.0%', '131k'],
+  ['bytedance/seed-1.6-flash',             'Seed 1.6 Flash',    'B',  '26.0%', '264k'],
+  ['x-ai/grok-4.1-fast',                  'Grok 4.1 Fast',       'A+', '73.1%', '2000k'],
+  ['openai/gpt-5-nano',                    'GPT-5 Nano',         'A',  '48.0%', '400k'],
+  ['xiaomi/mimo-v2-flash',                 'Mimo V2 Flash',       'A',  '45.0%', '262k'],
+]
+
+// 📖 Z.AI source - https://api.z.ai/api/coding/paas/v4
+// 📖 API keys available from Z.AI dashboard
+// 📖 All models are free with 200K context
+export const zai = [
+  ['glm-4.7',                             'GLM 4.7',            'A',  '73.8%', '200k'],
+  ['glm-4.5-air',                         'GLM 4.5 Air',        'A',  '68.0%', '200k'],
+]
+
+// 📖 Ollama Cloud source - https://ollama.com
+// 📖 API keys available from Ollama Cloud
+// 📖 Models listed at https://ollama.com/api/tags
+export const ollama = [
+  ['gpt-oss:120b-cloud',                   'GPT OSS 120B Cloud',  'S',  '60.0%', '128k'],
+  ['qwen3-coder-next:cloud',               'Qwen3 Coder Cloud',   'A+', '70.6%', '128k'],
+  ['deepseek-v3.2:cloud',                  'DeepSeek V3.2 Cloud',  'S+', '73.1%', '128k'],
 ]
 
 // 📖 All sources combined - used by the main script
@@ -127,6 +154,21 @@ export const sources = {
     name: 'Cerebras',
     url: 'https://api.cerebras.ai/v1/chat/completions',
     models: cerebras,
+  },
+  openrouter: {
+    name: 'OpenRouter',
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    models: openrouter,
+  },
+  zai: {
+    name: 'Z.AI',
+    url: 'https://api.z.ai/api/coding/paas/v4/chat/completions',
+    models: zai,
+  },
+  ollama: {
+    name: 'Ollama Cloud',
+    url: 'https://ollama.com/api/chat',
+    models: ollama,
   },
 }
 

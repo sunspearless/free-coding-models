@@ -2,6 +2,36 @@
 
 ---
 
+## 0.1.54
+
+### Added
+- **Dashboard independence**: Dashboard now has its own standalone model database (`dashboard/src/lib/sources.js`) and is fully decoupled from CLI
+- **Add Provider feature**: New "Add Provider" button to add custom API providers with name, key, and OpenAI-compatible endpoint URL
+- **Add Model feature**: New "Add Model" button to add custom models with name, context, price, tier, and provider selection
+- **Custom model tracking**: User-added models appear in the model table with a "Custom" badge and can be pinged like built-in models
+- **Custom provider filter**: Custom providers appear in the provider filter dropdown
+- Config file (`~/.free-coding-models.json`) now stores `customProviders` and `customModels` for persistence
+
+### Changed
+- Provider options in the UI now come from the `/api/providers` endpoint (built-in + custom) instead of being derived from models
+- Config API now returns and accepts `customProviders` and `customModels` fields
+
+---
+
+## 0.1.53
+
+### Added
+- **OpenRouter provider**: Added 3 models (Grok 4.1 Fast A+, GPT-5 Nano A, Mimo V2 Flash A) with pricing support
+- **Z.AI provider**: Added 5 models (GLM 4.7, GLM 4.7 Flash, GLM 4.6, GLM 4.5, GLM 4.5 Air - all A tier, free with 200K context)
+- **Ollama Cloud provider**: Added 3 curated models (GPT OSS 120B Cloud S, Qwen3 Coder Cloud A+, DeepSeek V3.2 Cloud S+) with 128K context
+- **Total models**: Expanded from 53 to 64 models across 6 providers (NIM, Groq, Cerebras, OpenRouter, Z.AI, Ollama Cloud)
+- **First-run wizard**: Added prompts for OpenRouter, Z.AI, and Ollama Cloud API keys
+- **Config system**: Added `OPENROUTER_API_KEY`, `ZAI_API_KEY`, and `OLLAMA_CLOUD_API_KEY` env var support
+- **OpenCode integration**: Added provider templates for OpenRouter, Z.AI, and Ollama Cloud (OpenAI-compatible with custom baseURL)
+- **Settings screen**: New providers appear in settings with enable/disable toggles and key test functionality
+
+---
+
 ## 0.1.52
 
 ### Added

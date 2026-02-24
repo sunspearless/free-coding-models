@@ -11,38 +11,27 @@
  *
  * 📖 Config JSON structure:
  *   {
- *     "apiKeys": {
- *       "nvidia":   "nvapi-xxx",
- *       "groq":     "gsk_xxx",
- *       "cerebras": "csk_xxx",
- *       "openrouter": "sk-or-xxx",
- *       "zai": "xxx",
- *       "ollama": "xxx"
+ *     "apiKeys": { "nvidia": "nvapi-xxx", "groq": "gsk_xxx", ... },
+ *     "providers": { "nvidia": { "enabled": true }, ... },
+ *     "favorites": [],
+ *     "pingHistory": {},
+ *     "customProviders": {
+ *       "my-provider": { "name": "My API", "url": "https://api.example.com/v1/chat/completions" }
  *     },
- *     "providers": {
- *       "nvidia":   { "enabled": true },
- *       "groq":     { "enabled": true },
- *       "cerebras": { "enabled": true },
- *       "openrouter": { "enabled": true },
- *       "zai":       { "enabled": true },
- *       "ollama":    { "enabled": true }
- *     }
+ *     "customModels": [
+ *       { "id": "my-provider/my-model", "name": "My Model", "context": "128k", "price": "Free", "tier": "A", "provider": "my-provider" }
+ *     ]
  *   }
  *
- * 📖 Migration: On first run, if the old plain-text ~/.free-coding-models exists
- *    and the new JSON file does not, the old key is auto-migrated as the nvidia key.
- *    The old file is left in place (not deleted) for safety.
- *
  * @functions
- *   → loadConfig() — Read ~/.free-coding-models.json; auto-migrate old plain-text config if needed
- *   → saveConfig(config) — Write config to ~/.free-coding-models.json with 0o600 permissions
- *   → getApiKey(config, providerKey) — Get effective API key (env var override > config > null)
+ *   → loadConfig() — Read config with customProviders/customModels
+ *   → saveConfig(config) — Write config with proper → addCustomProvider permissions
+ *  (key, name, url) — Add custom provider
+ *   → removeCustomProvider(key) — Remove custom provider
+ *   → addCustomModel(model) — Add custom model
+ *   → removeCustomModel(modelId) — Remove custom model
  *
- * @exports loadConfig, saveConfig, getApiKey
- * @exports CONFIG_PATH — path to the JSON config file
- *
- * @see bin/free-coding-models.js — main CLI that uses these functions
- * @see sources.js — provider keys come from Object.keys(sources)
+ * @exports loadConfig, saveConfig, addCustomProvider, removeCustomProvider, addCustomModel, removeCustomModel
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs'
@@ -85,23 +74,14 @@ export function loadConfig() {
     try {
       const raw = readFileSync(CONFIG_PATH, 'utf8').trim()
       const parsed = JSON.parse(raw)
-      // 📖 Ensure the shape is always complete — fill missing sections with defaults
-      if (!parsed.apiKeys) parsed.apiKeys = {}
-      if (!parsed.providers) parsed.providers = {}
-      if (!parsed.providers || Object.keys(parsed.providers).length === 0) {
-        // 📖 Initialize all providers as enabled if providers is empty
-        parsed.providers = {
-          nvidia: { enabled: true },
-          groq: { enabled: true },
-          cerebras: { enabled: true },
-          openrouter: { enabled: true },
-          zai: { enabled: true },
-          ollama: { enabled: true }
-        }
-      }
-      if (!parsed.favorites) parsed.favorites = []
-      if (!parsed.pingHistory) parsed.pingHistory = {}
-      return parsed
+   // 📖 Ensure the shape is always complete — fill missing sections with defaults
+    if (!parsed.apiKeys) parsed.apiKeys = {}
+    if (!parsed.providers) parsed.providers = {}
+    if (!parsed.favorites) parsed.favorites = []
+    if (!parsed.pingHistory) parsed.pingHistory = {}
+    if (!parsed.customProviders) parsed.customProviders = {}
+    if (!parsed.customModels) parsed.customModels = []
+    return parsed
     } catch {
       // 📖 Corrupted JSON — return empty config (user will re-enter keys)
       return _emptyConfig()
@@ -126,31 +106,11 @@ export function loadConfig() {
 
   return _emptyConfig()
 }
-  }
-
-  // 📖 Migration path: old plain-text file exists, new JSON doesn't
-  if (existsSync(LEGACY_CONFIG_PATH)) {
-    try {
-      const oldKey = readFileSync(LEGACY_CONFIG_PATH, 'utf8').trim()
-      if (oldKey) {
-        const config = _emptyConfig()
-        config.apiKeys.nvidia = oldKey
-        // 📖 Auto-save migrated config so next launch is fast
-        saveConfig(config)
-        return config
-      }
-    } catch {
-      // 📖 Can't read old file — proceed with empty config
-    }
-  }
-
-  return _emptyConfig()
-}
 
 /**
- * 📖 saveConfig: Write the config object to ~/.free-coding-models.json.
+ * 📖 saveConfig: Write config object to ~/.free-coding-models.json.
  *
- * 📖 Uses mode 0o600 so the file is only readable by the owning user (API keys!).
+ * 📖 Uses mode 0o600 so file is only readable by the owning user (API keys!).
  * 📖 Pretty-prints JSON for human readability.
  *
  * @param {{ apiKeys: Record<string,string>, providers: Record<string,{enabled:boolean}> }} config
@@ -208,5 +168,72 @@ function _emptyConfig() {
   return {
     apiKeys: {},
     providers: {},
+    favorites: [],
+    pingHistory: {},
+    customProviders: {},
+    customModels: []
   }
+}
+
+/**
+ * 📖 addCustomProvider: Add a new custom provider.
+ *
+ * @param {string} key — Unique identifier (e.g., 'my-api')
+ * @param {string} name — Display name (e.g., 'My Custom API')
+ * @param {string} url — API endpoint URL
+ * @returns {boolean} — True if added, false if key already exists
+ */
+export function addCustomProvider(key, name, url) {
+  const config = loadConfig()
+  if (config.customProviders[key]) return false
+  config.customProviders[key] = { name, url }
+  saveConfig(config)
+  return true
+}
+
+/**
+ * 📖 removeCustomProvider: Remove a custom provider and its models.
+ *
+ * @param {string} key — Provider key to remove
+ * @returns {boolean} — True if removed, false if not found
+ */
+export function removeCustomProvider(key) {
+  const config = loadConfig()
+  if (!config.customProviders[key]) return false
+  delete config.customProviders[key]
+  // Also remove all custom models from this provider
+  config.customModels = (config.customModels || []).filter(m => m.provider !== key)
+  saveConfig(config)
+  return true
+}
+
+/**
+ * 📖 addCustomModel: Add a new custom model.
+ *
+ * @param {{ id: string, name: string, context: string, price: string, tier: string, provider: string }} model
+ * @returns {boolean} — True if added
+ */
+export function addCustomModel(model) {
+  const config = loadConfig()
+  config.customModels = config.customModels || []
+  config.customModels.push(model)
+  saveConfig(config)
+  return true
+}
+
+/**
+ * 📖 removeCustomModel: Remove a custom model by ID.
+ *
+ * @param {string} modelId — Model ID to remove
+ * @returns {boolean} — True if removed, false if not found
+ */
+export function removeCustomModel(modelId) {
+  const config = loadConfig()
+  const initialLength = (config.customModels || []).length
+  config.customModels = (config.customModels || []).filter(m => m.id !== modelId)
+  if (config.customModels.length < initialLength) {
+    saveConfig(config)
+    return true
+  }
+  return false
 }

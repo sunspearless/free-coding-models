@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-import ModelTable from '$lib/components/ModelTable.svelte'
-import StatsTable from '$lib/components/StatsTable.svelte'
-import SettingsModal from '$lib/components/SettingsModal.svelte'
-import Button from '$lib/components/Button.svelte'
-import ThemeToggle from '$lib/components/ThemeToggle.svelte'
+  import { Star, BarChart3, Loader2, Plus } from '@lucide/svelte'
+  import ModelTable from '$lib/components/ModelTable.svelte'
+  import StatsTable from '$lib/components/StatsTable.svelte'
+  import SettingsModal from '$lib/components/SettingsModal.svelte'
+  import AddModelModal from '$lib/components/AddModelModal.svelte'
+  import AddProviderModal from '$lib/components/AddProviderModal.svelte'
+  import Button from '$lib/components/Button.svelte'
+  import ThemeToggle from '$lib/components/ThemeToggle.svelte'
+ import ProviderFilter from '$lib/components/ProviderFilter.svelte'
 
   interface Model {
     idx: number
@@ -19,14 +23,21 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
     pings: Array<{ ms: number, code: string }>
     httpCode: string | null
     lastPing: number | null
+    isCustom?: boolean
   }
+
+  type Provider = { key: string; name: string; isBuiltIn: boolean }
 
   let models = $state<Model[]>([])
   let config = $state<any>(null)
+  let providers = $state<Provider[]>([])
   let loading = $state(true)
   let showSettings = $state(false)
+  let showAddModel = $state(false)
+  let showAddProvider = $state(false)
   let selectedModels = $state<Set<string>>(new Set())
   let tierFilter = $state<string>('All')
+  let selectedProviders = $state<Set<string>>(new Set())
   let pingingAll = $state(false)
   let pingingSelected = $state(false)
   let favorites = $state<Set<string>>(new Set())
@@ -39,6 +50,7 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
     const load = async () => {
       await loadModels()
       await loadConfig()
+      await loadProviders()
       await loadFavorites()
       await loadPingHistory()
       loading = false
@@ -72,6 +84,16 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
     }
   }
 
+  async function loadProviders() {
+    try {
+      const response = await fetch('/api/providers')
+      const data = await response.json()
+      providers = data.providers || []
+    } catch (err) {
+      console.error('Failed to load providers:', err)
+    }
+  }
+
   async function loadFavorites() {
     try {
       const response = await fetch('/api/favorites')
@@ -93,6 +115,11 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
     }
   }
 
+  // Reactive provider options from API (built-in + custom)
+  let providerOptions = $derived(
+    providers.map((p) => ({ key: p.key, name: p.name }))
+  )
+
   async function toggleFavorite(modelId: string) {
     try {
       const isFav = favorites.has(modelId)
@@ -107,6 +134,11 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
       console.error('Failed to toggle favorite:', err)
       alert('Failed to update favorites')
     }
+  }
+
+  // Handler for ProviderFilter change event
+  function handleProviderChange(event: CustomEvent) {
+    selectedProviders = event.detail.selected;
   }
 
   async function pingModel(model: Model) {
@@ -187,10 +219,18 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
 
   async function handleSaveConfig(apiKeys: Record<string, string>) {
     try {
+      // 📖 Only send non-empty API keys to preserve existing keys
+      const keysToSave: Record<string, string> = {}
+      for (const [provider, key] of Object.entries(apiKeys)) {
+        if (key && key.trim()) {
+          keysToSave[provider] = key
+        }
+      }
+      
       const response = await fetch('/api/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKeys })
+        body: JSON.stringify({ apiKeys: keysToSave })
       })
 
       if (!response.ok) {
@@ -201,6 +241,47 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
       await loadModels()
     } catch (err) {
       console.error('Failed to save config:', err)
+      throw err
+    }
+  }
+
+  async function handleAddModel(model: { id: string; name: string; context: string; price: string; tier: string; provider: string }) {
+    try {
+      const response = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(model)
+      })
+
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.message || 'Failed to add model')
+      }
+
+      await loadModels()
+      await loadProviders()
+    } catch (err: any) {
+      console.error('Failed to add model:', err)
+      throw err
+    }
+  }
+
+  async function handleAddProvider(provider: { key: string; name: string; url: string }) {
+    try {
+      const response = await fetch('/api/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(provider)
+      })
+
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.message || 'Failed to add provider')
+      }
+
+      await loadProviders()
+    } catch (err: any) {
+      console.error('Failed to add provider:', err)
       throw err
     }
   }
@@ -219,6 +300,11 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
       if (allowed) {
         filtered = filtered.filter((m) => allowed.includes(m.tier))
       }
+    }
+
+    // Provider filter (temporary)
+    if (selectedProviders.size > 0) {
+      filtered = filtered.filter((m) => selectedProviders.has(m.providerKey));
     }
 
     if (currentTab === 'favorites') {
@@ -252,7 +338,9 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
         </div>
 
         <div class="flex items-center gap-2">
-          <Button variant="secondary" size="md" type="button" on:click={() => showSettings = true}>Settings</Button>
+          <Button variant="secondary" size="md" type="button" onclick={() => showAddProvider = true}>Add Provider</Button>
+          <Button variant="secondary" size="md" type="button" onclick={() => showAddModel = true}>Add Model</Button>
+          <Button variant="secondary" size="md" type="button" onclick={() => showSettings = true}>Settings</Button>
           <ThemeToggle />
         </div>
       </div>
@@ -277,9 +365,7 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
             ? 'text-[var(--color-text-espresso)] border-[var(--color-text-espresso)]'
             : 'text-[var(--color-text-taupe)] border-transparent hover:text-[var(--color-text-espresso)]'}"
         >
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-          </svg>
+          <Star class="w-4 h-4" />
           Favorites
         </button>
         <button
@@ -288,9 +374,7 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
             ? 'text-[var(--color-text-espresso)] border-[var(--color-text-espresso)]'
             : 'text-[var(--color-text-taupe)] border-transparent hover:text-[var(--color-text-espresso)]'}"
         >
-          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M3 3a1 1 0 000 2h14a1 1 0 100-2H3zM3 7a1 1 0 000 2h14a1 1 0 100-2H3zM3 11a1 1 0 100 2h14a1 1 0 100-2H3zM3 15a1 1 0 100 2h14a1 1 0 100-2H3z" />
-          </svg>
+          <BarChart3 class="w-4 h-4" />
           Stats
         </button>
       </nav>
@@ -317,9 +401,16 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
             <option value="A">A Tier (A+, A, A-)</option>
             <option value="B">B Tier (B+, B)</option>
             <option value="C">C Tier</option>
-          </select>
+</select>
 
-          <div class="flex items-center text-sm text-[var(--color-text-taupe)] font-medium">
+          <!-- Provider filter (temporary) -->
+          <ProviderFilter
+            providers={providerOptions}
+            selected={selectedProviders}
+            on:change={handleProviderChange}
+          />
+
+           <div class="flex items-center text-sm text-[var(--color-text-taupe)] font-medium">
             {#if currentTab === 'favorites'}
               <span>{favorites.size} favorit{favorites.size === 1 ? 'e' : 'e'}</span>
             {:else if currentTab === 'stats'}
@@ -337,10 +428,7 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
             class="px-5 py-2.5 bg-[var(--color-accent-periwinkle)] text-[var(--color-bg-cream)] border border-[var(--color-accent-periwinkle)] rounded-sm hover:bg-[var(--color-text-espresso)] hover:border-[var(--color-text-espresso)] disabled:bg-[var(--color-text-taupe)] disabled:border-[var(--color-text-taupe)] disabled:cursor-not-allowed transition-all duration-300 text-sm font-medium tracking-wide flex items-center gap-2"
           >
             {#if pingingSelected}
-              <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
+              <Loader2 class="animate-spin h-4 w-4" />
               Pinging...
             {:else}
               Ping Selected ({selectedModels.size})
@@ -352,10 +440,7 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
             class="px-5 py-2.5 bg-[var(--color-accent-olive)] text-[var(--color-bg-cream)] border border-[var(--color-accent-olive)] rounded-sm hover:bg-[var(--color-text-espresso)] hover:border-[var(--color-text-espresso)] disabled:bg-[var(--color-text-taupe)] disabled:border-[var(--color-text-taupe)] disabled:cursor-not-allowed transition-all duration-300 text-sm font-medium tracking-wide flex items-center gap-2"
           >
             {#if pingingAll}
-              <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
+              <Loader2 class="animate-spin h-4 w-4" />
               Pinging...
             {:else}
               Ping All
@@ -420,5 +505,20 @@ import ThemeToggle from '$lib/components/ThemeToggle.svelte'
     config={config}
     onSave={handleSaveConfig}
     onClose={() => showSettings = false}
+  />
+
+  <!-- Add Model Modal -->
+  <AddModelModal
+    isOpen={showAddModel}
+    providers={providers}
+    onAdd={handleAddModel}
+    onClose={() => showAddModel = false}
+  />
+
+  <!-- Add Provider Modal -->
+  <AddProviderModal
+    isOpen={showAddProvider}
+    onAdd={handleAddProvider}
+    onClose={() => showAddProvider = false}
   />
 </div>

@@ -163,7 +163,7 @@ function runUpdate(latestVersion) {
 
 // ─── First-run wizard ─────────────────────────────────────────────────────────
 // 📖 Shown when NO provider has a key configured yet.
-// 📖 Steps through all 3 providers sequentially — each is optional (Enter to skip).
+// 📖 Steps through all providers sequentially — each is optional (Enter to skip).
 // 📖 At least one key must be entered to proceed. Keys saved to ~/.free-coding-models.json.
 // 📖 Returns the nvidia key (or null) for backward-compat with the rest of main().
 async function promptApiKey(config) {
@@ -197,6 +197,30 @@ async function promptApiKey(config) {
       url: 'https://cloud.cerebras.ai',
       hint: 'API Keys → Create',
       prefix: 'csk_ / cauth_',
+    },
+    {
+      key: 'openrouter',
+      label: 'OpenRouter',
+      color: chalk.rgb(255, 105, 180),
+      url: 'https://openrouter.ai/keys',
+      hint: 'Keys → Create API Key',
+      prefix: 'sk-or-',
+    },
+    {
+      key: 'zai',
+      label: 'Z.AI',
+      color: chalk.rgb(100, 200, 255),
+      url: 'https://api.z.ai/api/coding/paas/v4',
+      hint: 'Get API key from Z.AI dashboard',
+      prefix: '',
+    },
+    {
+      key: 'ollama',
+      label: 'Ollama Cloud',
+      color: chalk.rgb(150, 150, 150),
+      url: 'https://ollama.com',
+      hint: 'Get API key from Ollama Cloud',
+      prefix: 'ollama-',
     },
   ]
 
@@ -932,12 +956,15 @@ After installation, you can use: opencode --model ${modelRef}`
             reject(err)
           }
         })
-      })
-    }
-  } else {
+       })
+     }
+   } else {
     // 📖 Groq: built-in OpenCode provider — needs provider block with apiKey in opencode.json.
     // 📖 Cerebras: NOT built-in — needs @ai-sdk/openai-compatible + baseURL, like NVIDIA.
-    // 📖 Both need the model registered in provider.<key>.models so OpenCode can find it.
+    // 📖 OpenRouter: NOT built-in — needs @ai-sdk/openai-compatible + baseURL.
+    // 📖 Z.AI: NOT built-in — needs @ai-sdk/openai-compatible + baseURL.
+    // 📖 Ollama Cloud: NOT built-in — needs @ai-sdk/openai-compatible + baseURL.
+    // 📖 All need the model registered in provider.<key>.models so OpenCode can find it.
     console.log(chalk.green(`  🚀 Setting ${chalk.bold(model.label)} as default…`))
     console.log(chalk.dim(`  Model: ${modelRef}`))
     console.log()
@@ -967,6 +994,39 @@ After installation, you can use: opencode --model ${modelRef}`
           options: {
             baseURL: 'https://api.cerebras.ai/v1',
             apiKey: '{env:CEREBRAS_API_KEY}'
+          },
+          models: {}
+        }
+      } else if (providerKey === 'openrouter') {
+        // 📖 OpenRouter is OpenAI-compatible — needs npm package and baseURL
+        config.provider.openrouter = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'OpenRouter',
+          options: {
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: '{env:OPENROUTER_API_KEY}'
+          },
+          models: {}
+        }
+      } else if (providerKey === 'zai') {
+        // 📖 Z.AI is OpenAI-compatible — needs npm package and baseURL
+        config.provider.zai = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Z.AI',
+          options: {
+            baseURL: 'https://api.z.ai/api/coding/paas/v4/chat/completions',
+            apiKey: '{env:ZAI_API_KEY}'
+          },
+          models: {}
+        }
+      } else if (providerKey === 'ollama') {
+        // 📖 Ollama Cloud is OpenAI-compatible — needs npm package and baseURL
+        config.provider.ollama = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Ollama Cloud',
+          options: {
+            baseURL: 'https://ollama.com/api',
+            apiKey: '{env:OLLAMA_CLOUD_API_KEY}'
           },
           models: {}
         }
@@ -1119,10 +1179,13 @@ ${isWindows ? 'set NVIDIA_API_KEY=your_key_here' : 'export NVIDIA_API_KEY=your_k
       console.log(chalk.cyan(installPrompt))
       console.log()
     }
-  } else {
+   } else {
     // 📖 Groq: built-in OpenCode provider — needs provider block with apiKey in opencode.json.
     // 📖 Cerebras: NOT built-in — needs @ai-sdk/openai-compatible + baseURL, like NVIDIA.
-    // 📖 Both need the model registered in provider.<key>.models so OpenCode can find it.
+    // 📖 OpenRouter: NOT built-in — needs @ai-sdk/openai-compatible + baseURL.
+    // 📖 Z.AI: NOT built-in — needs @ai-sdk/openai-compatible + baseURL.
+    // 📖 Ollama Cloud: NOT built-in — needs @ai-sdk/openai-compatible + baseURL.
+    // 📖 All need the model registered in provider.<key>.models so OpenCode can find it.
     console.log(chalk.green(`  🖥 Setting ${chalk.bold(model.label)} as default for OpenCode Desktop…`))
     console.log(chalk.dim(`  Model: ${modelRef}`))
     console.log()
@@ -1150,6 +1213,36 @@ ${isWindows ? 'set NVIDIA_API_KEY=your_key_here' : 'export NVIDIA_API_KEY=your_k
           options: {
             baseURL: 'https://api.cerebras.ai/v1',
             apiKey: '{env:CEREBRAS_API_KEY}'
+          },
+          models: {}
+        }
+      } else if (providerKey === 'openrouter') {
+        config.provider.openrouter = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'OpenRouter',
+          options: {
+            baseURL: 'https://openrouter.ai/api/v1',
+            apiKey: '{env:OPENROUTER_API_KEY}'
+          },
+          models: {}
+        }
+      } else if (providerKey === 'zai') {
+        config.provider.zai = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Z.AI',
+          options: {
+            baseURL: 'https://api.z.ai/api/coding/paas/v4/chat/completions',
+            apiKey: '{env:ZAI_API_KEY}'
+          },
+          models: {}
+        }
+      } else if (providerKey === 'ollama') {
+        config.provider.ollama = {
+          npm: '@ai-sdk/openai-compatible',
+          name: 'Ollama Cloud',
+          options: {
+            baseURL: 'https://ollama.com/api',
+            apiKey: '{env:OLLAMA_CLOUD_API_KEY}'
           },
           models: {}
         }
