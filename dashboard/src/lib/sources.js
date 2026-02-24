@@ -224,7 +224,7 @@ export const groq = [
 // 📖 Cerebras source - https://cloud.cerebras.ai
 // 📖 Free API keys available at https://cloud.cerebras.ai
 export const cerebras = [
-  ["llama3.3-70b", "Llama 3.3 70B", "A-", "39.5%", "128k"],
+  ["llama-3.3-70b", "Llama 3.3 70B", "A-", "39.5%", "128k"],
   ["llama-4-scout-17b-16e-instruct", "Llama 4 Scout", "A", "44.0%", "10M"],
   ["qwen-3-32b", "Qwen3 32B", "A+", "50.0%", "128k"],
 ];

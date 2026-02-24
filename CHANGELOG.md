@@ -16,6 +16,9 @@
 - Provider options in the UI now come from the `/api/providers` endpoint (built-in + custom) instead of being derived from models
 - Config API now returns and accepts `customProviders` and `customModels` fields
 
+### Fixed
+- **Cerebras model ID**: Fixed model ID from `llama3.3-70b` to `llama-3.3-70b` (Cerebras API requires hyphen format)
+
 ---
 
 ## 0.1.53
