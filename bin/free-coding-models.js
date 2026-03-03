@@ -100,6 +100,8 @@ import { loadConfig, saveConfig, getApiKey, resolveApiKeys, isProviderEnabled, s
 import { buildMergedModels } from '../lib/model-merger.js'
 import { ProxyServer } from '../lib/proxy-server.js'
 import { loadOpenCodeConfig, saveOpenCodeConfig, syncToOpenCode, restoreOpenCodeBackup } from '../lib/opencode-sync.js'
+import { loadUsageMap } from '../lib/usage-reader.js'
+import { loadRecentLogs } from '../lib/log-reader.js'
 
 // 📖 mergedModels: cross-provider grouped model list (one entry per label, N providers each)
 // 📖 mergedModelByLabel: fast lookup map from display label → merged model entry
@@ -736,6 +738,7 @@ const spinCell = (f, o = 0) => chalk.dim.yellow(FRAMES[(f + o) % FRAMES.length].
 const SETTINGS_OVERLAY_BG = chalk.bgRgb(14, 20, 30)
 const HELP_OVERLAY_BG = chalk.bgRgb(24, 16, 32)
 const RECOMMEND_OVERLAY_BG = chalk.bgRgb(10, 25, 15)  // 📖 Green tint for Smart Recommend
+const LOG_OVERLAY_BG = chalk.bgRgb(10, 20, 26)        // 📖 Dark blue-green tint for Log page
 const OVERLAY_PANEL_WIDTH = 116
 
 // 📖 Strip ANSI color/control sequences to estimate visible text width before padding.
@@ -945,6 +948,7 @@ function renderTable(results, pendingPings, frame, cursor = null, sortColumn = '
   const W_VERDICT = 14
   const W_STAB = 11
   const W_UPTIME = 6
+  const W_USAGE = 7
 
   // 📖 Sort models using the shared helper
   const sorted = sortResultsWithPinnedFavorites(visibleResults, sortColumn, sortDirection)
@@ -975,6 +979,7 @@ function renderTable(results, pendingPings, frame, cursor = null, sortColumn = '
   const verdictH = sortColumn === 'verdict' ? dir + ' Verdict' : 'Verdict'
   const stabH    = sortColumn === 'stability' ? dir + ' Stability' : 'Stability'
   const uptimeH  = sortColumn === 'uptime' ? dir + ' Up%' : 'Up%'
+  const usageH   = sortColumn === 'usage' ? dir + ' Usage' : 'Usage'
 
   // 📖 Helper to colorize first letter for keyboard shortcuts
   // 📖 IMPORTANT: Pad PLAIN TEXT first, then apply colors to avoid alignment issues
@@ -1011,9 +1016,15 @@ function renderTable(results, pendingPings, frame, cursor = null, sortColumn = '
     return chalk.dim('Sta') + chalk.white.bold('B') + chalk.dim('ility' + padding)
   })()
   const uptimeH_c  = sortColumn === 'uptime' ? chalk.bold.cyan(uptimeH.padEnd(W_UPTIME)) : colorFirst(uptimeH, W_UPTIME, chalk.green)
+  // 📖 Custom colorization for Usage: highlight 'G' (Shift+G = sort key)
+  const usageH_c   = sortColumn === 'usage' ? chalk.bold.cyan(usageH.padEnd(W_USAGE)) : (() => {
+    const plain = 'Usage'
+    const padding = ' '.repeat(Math.max(0, W_USAGE - plain.length))
+    return chalk.dim('Usa') + chalk.yellow.bold('G') + chalk.dim('e' + padding)
+  })()
 
-  // 📖 Header with proper spacing (column order: Rank, Tier, SWE%, CTX, Model, Origin, Latest Ping, Avg Ping, Health, Verdict, Stability, Up%)
-  lines.push('  ' + rankH_c + '  ' + tierH_c + '  ' + sweH_c + '  ' + ctxH_c + '  ' + modelH_c + '  ' + originH_c + '  ' + pingH_c + '  ' + avgH_c + '  ' + healthH_c + '  ' + verdictH_c + '  ' + stabH_c + '  ' + uptimeH_c)
+  // 📖 Header with proper spacing (column order: Rank, Tier, SWE%, CTX, Model, Origin, Latest Ping, Avg Ping, Health, Verdict, Stability, Up%, Usage)
+  lines.push('  ' + rankH_c + '  ' + tierH_c + '  ' + sweH_c + '  ' + ctxH_c + '  ' + modelH_c + '  ' + originH_c + '  ' + pingH_c + '  ' + avgH_c + '  ' + healthH_c + '  ' + verdictH_c + '  ' + stabH_c + '  ' + uptimeH_c + '  ' + usageH_c)
 
   // 📖 Separator line
   lines.push(
@@ -1029,7 +1040,8 @@ function renderTable(results, pendingPings, frame, cursor = null, sortColumn = '
     chalk.dim('─'.repeat(W_STATUS)) + '  ' +
     chalk.dim('─'.repeat(W_VERDICT)) + '  ' +
     chalk.dim('─'.repeat(W_STAB)) + '  ' +
-    chalk.dim('─'.repeat(W_UPTIME))
+    chalk.dim('─'.repeat(W_UPTIME)) + '  ' +
+    chalk.dim('─'.repeat(W_USAGE))
   )
 
   // 📖 Viewport clipping: only render models that fit on screen
@@ -1048,18 +1060,9 @@ function renderTable(results, pendingPings, frame, cursor = null, sortColumn = '
     // 📖 Left-aligned columns - pad plain text first, then colorize
     const num = chalk.dim(String(r.idx).padEnd(W_RANK))
     const tier = tierFn(r.tier.padEnd(W_TIER))
-    // 📖 Show provider count for merged (multi-provider) models, or single provider name
-    const merged = mergedModelByLabel.get(r.label)
-    const providerCount = merged ? merged.providerCount : 1
+    // 📖 Keep terminal view provider-specific so each row is monitorable per provider
     const providerName = sources[r.providerKey]?.name ?? r.providerKey ?? 'NIM'
-    let source
-    if (providerCount >= 3) {
-      source = chalk.green((`${providerCount} providers`).padEnd(W_SOURCE))
-    } else if (providerCount === 2) {
-      source = chalk.yellow((`${providerCount} providers`).padEnd(W_SOURCE))
-    } else {
-      source = chalk.green(providerName.padEnd(W_SOURCE))
-    }
+    const source = chalk.green(providerName.padEnd(W_SOURCE))
     // 📖 Favorites: always reserve 2 display columns at the start of Model column.
     // 📖 🎯 (2 cols) for recommended, ⭐ (2 cols) for favorites, '  ' (2 spaces) for non-favorites — keeps alignment stable.
     const favoritePrefix = r.isRecommended ? '🎯' : r.isFavorite ? '⭐' : '  '
@@ -1241,11 +1244,28 @@ function renderTable(results, pendingPings, frame, cursor = null, sortColumn = '
 
     // 📖 When cursor is on this row, render Model and Origin in bright white for readability
     const nameCell = isCursor ? chalk.white.bold(favoritePrefix + r.label.slice(0, nameWidth).padEnd(nameWidth)) : name
-    const sourceCursorText = providerCount > 1 ? (`${providerCount} providers`).padEnd(W_SOURCE) : providerName.padEnd(W_SOURCE)
+    const sourceCursorText = providerName.padEnd(W_SOURCE)
     const sourceCell = isCursor ? chalk.white.bold(sourceCursorText) : source
 
-    // 📖 Build row with double space between columns (order: Rank, Tier, SWE%, CTX, Model, Origin, Latest Ping, Avg Ping, Health, Verdict, Stability, Up%)
-    const row = '  ' + num + '  ' + tier + '  ' + sweCell + '  ' + ctxCell + '  ' + nameCell + '  ' + sourceCell + '  ' + pingCell + '  ' + avgCell + '  ' + status + '  ' + speedCell + '  ' + stabCell + '  ' + uptimeCell
+    // 📖 Usage column — quota percent remaining from token-stats.json (higher = more quota left)
+    let usageCell
+    if (r.usagePercent !== undefined && r.usagePercent !== null) {
+      const usageStr = Math.round(r.usagePercent) + '%'
+      if (r.usagePercent >= 80) {
+        usageCell = chalk.greenBright(usageStr.padEnd(W_USAGE))
+      } else if (r.usagePercent >= 50) {
+        usageCell = chalk.yellow(usageStr.padEnd(W_USAGE))
+      } else if (r.usagePercent >= 20) {
+        usageCell = chalk.rgb(255, 165, 0)(usageStr.padEnd(W_USAGE)) // orange
+      } else {
+        usageCell = chalk.red(usageStr.padEnd(W_USAGE))
+      }
+    } else {
+      usageCell = chalk.dim('--'.padEnd(W_USAGE))
+    }
+
+    // 📖 Build row with double space between columns (order: Rank, Tier, SWE%, CTX, Model, Origin, Latest Ping, Avg Ping, Health, Verdict, Stability, Up%, Usage)
+    const row = '  ' + num + '  ' + tier + '  ' + sweCell + '  ' + ctxCell + '  ' + nameCell + '  ' + sourceCell + '  ' + pingCell + '  ' + avgCell + '  ' + status + '  ' + speedCell + '  ' + stabCell + '  ' + uptimeCell + '  ' + usageCell
 
     if (isCursor) {
       lines.push(chalk.bgRgb(50, 0, 60)(row))
@@ -1278,7 +1298,7 @@ function renderTable(results, pendingPings, frame, cursor = null, sortColumn = '
       ? chalk.rgb(0, 200, 255)('Enter→OpenDesktop')
       : chalk.rgb(0, 200, 255)('Enter→OpenCode')
   // 📖 Line 1: core navigation + sorting shortcuts
-  lines.push(chalk.dim(`  ↑↓ Navigate  •  `) + actionHint + chalk.dim(`  •  `) + chalk.yellow('F') + chalk.dim(` Favorite  •  R/Y/O/M/L/A/S/C/H/V/B/U Sort  •  `) + chalk.yellow('T') + chalk.dim(` Tier  •  `) + chalk.yellow('N') + chalk.dim(` Origin  •  W↓/X↑ (${intervalSec}s)  •  `) + chalk.rgb(255, 100, 50).bold('Z') + chalk.dim(` Mode  •  `) + chalk.yellow('P') + chalk.dim(` Settings  •  `) + chalk.rgb(0, 255, 80).bold('K') + chalk.dim(` Help`))
+  lines.push(chalk.dim(`  ↑↓ Navigate  •  `) + actionHint + chalk.dim(`  •  `) + chalk.yellow('F') + chalk.dim(` Favorite  •  R/Y/O/M/L/A/S/C/H/V/B/U/`) + chalk.yellow('G') + chalk.dim(` Sort  •  `) + chalk.yellow('T') + chalk.dim(` Tier  •  `) + chalk.yellow('N') + chalk.dim(` Origin  •  W↓/=↑ (${intervalSec}s)  •  `) + chalk.rgb(255, 100, 50).bold('Z') + chalk.dim(` Mode  •  `) + chalk.yellow('X') + chalk.dim(` Logs  •  `) + chalk.yellow('P') + chalk.dim(` Settings  •  `) + chalk.rgb(0, 255, 80).bold('K') + chalk.dim(` Help`))
   // 📖 Line 2: profiles, recommend, feature request, bug report, and extended hints — gives visibility to less-obvious features
   lines.push(chalk.dim(`  `) + chalk.rgb(200, 150, 255).bold('⇧P') + chalk.dim(` Cycle profile  •  `) + chalk.rgb(200, 150, 255).bold('⇧S') + chalk.dim(` Save profile  •  `) + chalk.rgb(0, 200, 180).bold('Q') + chalk.dim(` Smart Recommend  •  `) + chalk.rgb(57, 255, 20).bold('J') + chalk.dim(` Request feature  •  `) + chalk.rgb(255, 87, 51).bold('I') + chalk.dim(` Report bug  •  `) + chalk.yellow('E') + chalk.dim(`/`) + chalk.yellow('D') + chalk.dim(` Tier ↑↓  •  `) + chalk.yellow('Esc') + chalk.dim(` Close overlay  •  Ctrl+C Exit`))
   // 📖 Proxy status line — shown when multi-account rotation proxy is active; empty otherwise
@@ -2145,12 +2165,13 @@ async function startProxyAndLaunch(model, accounts, fcmConfig) {
   registerExitHandlers()
   proxyCleanedUp = false
 
-  const proxy = new ProxyServer({ accounts })
+  const proxyToken = `fcm_${randomUUID().replace(/-/g, '')}`
+  const proxy = new ProxyServer({ accounts, proxyApiKey: proxyToken })
   try {
-    const port = await proxy.start()
+    const { port } = await proxy.start()
     activeProxy = proxy
     console.log(chalk.dim(`  🔀 Multi-account proxy listening on port ${port} (${accounts.length} accounts)`))
-    await startOpenCodeWithProxy(model, port, model.modelId, accounts, fcmConfig)
+    await startOpenCodeWithProxy(model, port, model.modelId, accounts, fcmConfig, proxyToken)
   } catch (err) {
     console.error(chalk.red(`  ✗ Proxy failed to start: ${err.message}`))
     console.log(chalk.dim('  Falling back to direct single-account flow…'))
@@ -2161,9 +2182,11 @@ async function startProxyAndLaunch(model, accounts, fcmConfig) {
 
 // 📖 startOpenCodeWithProxy: Registers fcm-proxy provider in OpenCode config,
 // 📖 spawns OpenCode with that provider, then removes the ephemeral config after exit.
-async function startOpenCodeWithProxy(model, port, proxyModelId, accounts, fcmConfig) {
+async function startOpenCodeWithProxy(model, port, proxyModelId, accounts, fcmConfig, proxyToken) {
   const config = loadOpenCodeConfig()
   if (!config.provider) config.provider = {}
+  const previousProxyProvider = config.provider['fcm-proxy']
+  const previousModel = config.model
 
   // 📖 Register ephemeral fcm-proxy provider pointing to our local proxy server
   config.provider['fcm-proxy'] = {
@@ -2171,7 +2194,7 @@ async function startOpenCodeWithProxy(model, port, proxyModelId, accounts, fcmCo
     name: 'FCM Proxy',
     options: {
       baseURL: `http://127.0.0.1:${port}/v1`,
-      apiKey: 'fcm-proxy-key'
+      apiKey: proxyToken
     },
     models: {
       [proxyModelId]: { name: model.label }
@@ -2187,11 +2210,23 @@ async function startOpenCodeWithProxy(model, port, proxyModelId, accounts, fcmCo
   try {
     await spawnOpenCode(['--model', `fcm-proxy/${proxyModelId}`], 'fcm-proxy', fcmConfig)
   } finally {
-    // 📖 Best-effort cleanup: remove fcm-proxy from opencode.json so stale config doesn't persist
+    // 📖 Best-effort cleanup: restore previous fcm-proxy/model values if they existed
     try {
       const savedCfg = loadOpenCodeConfig()
-      if (savedCfg.provider?.['fcm-proxy']) delete savedCfg.provider['fcm-proxy']
-      if (typeof savedCfg.model === 'string' && savedCfg.model.startsWith('fcm-proxy/')) delete savedCfg.model
+      if (!savedCfg.provider) savedCfg.provider = {}
+
+      if (previousProxyProvider) {
+        savedCfg.provider['fcm-proxy'] = previousProxyProvider
+      } else if (savedCfg.provider['fcm-proxy']) {
+        delete savedCfg.provider['fcm-proxy']
+      }
+
+      if (typeof previousModel === 'string' && previousModel.length > 0) {
+        savedCfg.model = previousModel
+      } else if (typeof savedCfg.model === 'string' && savedCfg.model.startsWith('fcm-proxy/')) {
+        delete savedCfg.model
+      }
+
       saveOpenCodeConfig(savedCfg)
     } catch { /* best-effort */ }
     await cleanupProxy()
@@ -2855,6 +2890,14 @@ async function main() {
     }))
   syncFavoriteFlags(results, config)
 
+  // 📖 Load usage data from token-stats.json and attach usagePercent to each result row.
+  // 📖 usagePercent is the quota percent remaining (0–100). undefined = no data available.
+  const usageMap = loadUsageMap()
+  for (const r of results) {
+    const pct = usageMap[r.modelId]
+    r.usagePercent = typeof pct === 'number' ? pct : undefined
+  }
+
   // 📖 Clamp scrollOffset so cursor is always within the visible viewport window.
   // 📖 Called after every cursor move, sort change, and terminal resize.
   const adjustScrollOffset = (st) => {
@@ -2942,6 +2985,9 @@ async function main() {
     bugReportError: null,         // 📖 Last webhook error message
     // 📖 OpenCode sync status (S key in settings)
     settingsSyncStatus: null,     // 📖 { type: 'success'|'error', msg: string } — shown in settings footer
+    // 📖 Log page overlay state (X key opens it)
+    logVisible: false,            // 📖 Whether the log page overlay is active
+    logScrollOffset: 0,           // 📖 Vertical scroll offset for log overlay viewport
   }
 
   // 📖 Re-clamp viewport on terminal resize
@@ -3193,6 +3239,9 @@ async function main() {
     lines.push('')
     lines.push(`  ${chalk.cyan('Up%')}         Uptime — ratio of successful pings to total pings  ${chalk.dim('Sort:')} ${chalk.yellow('U')}`)
     lines.push(`              ${chalk.dim('If a model only works half the time, you\'ll waste time retrying. Higher = more reliable.')}`)
+    lines.push('')
+    lines.push(`  ${chalk.cyan('Usage')}       Quota percent remaining (from token-stats.json)  ${chalk.dim('Sort:')} ${chalk.yellow('Shift+G')}`)
+    lines.push(`              ${chalk.dim('Shows how much of your quota is still available. Green = plenty left, red = running low.')}`)
 
     lines.push('')
     lines.push(`  ${chalk.bold('Main TUI')}`)
@@ -3202,7 +3251,8 @@ async function main() {
     lines.push('')
     lines.push(`  ${chalk.bold('Controls')}`)
     lines.push(`  ${chalk.yellow('W')}  Decrease ping interval (faster)`)
-    lines.push(`  ${chalk.yellow('X')}  Increase ping interval (slower)`)
+    lines.push(`  ${chalk.yellow('=')}  Increase ping interval (slower)  ${chalk.dim('(was X — X is now the log page)')}`)
+    lines.push(`  ${chalk.yellow('X')}  Toggle request log page  ${chalk.dim('(shows recent requests from request-log.jsonl)')}`)
     lines.push(`  ${chalk.yellow('Z')}  Cycle launch mode  ${chalk.dim('(OpenCode CLI → OpenCode Desktop → OpenClaw)')}`)
     lines.push(`  ${chalk.yellow('F')}  Toggle favorite on selected row  ${chalk.dim('(⭐ pinned at top, persisted)')}`)
     lines.push(`  ${chalk.yellow('Q')}  Smart Recommend  ${chalk.dim('(🎯 find the best model for your task — questionnaire + live analysis)')}`)
@@ -3247,7 +3297,91 @@ async function main() {
     return cleared.join('\n')
   }
 
-  // ─── Smart Recommend overlay renderer ─────────────────────────────────────
+  // ─── Log page overlay renderer ────────────────────────────────────────────
+  // 📖 renderLog: Draw the log page overlay showing recent requests from
+  // 📖 ~/.free-coding-models/request-log.jsonl, newest-first.
+  // 📖 Toggled with X key. Esc or X closes.
+  function renderLog() {
+    const EL = '\x1b[K'
+    const lines = []
+    lines.push('')
+    lines.push(`  ${chalk.bold('📋 Request Log')}  ${chalk.dim('— recent requests • ↑↓ scroll • X or Esc close')}`)
+    lines.push('')
+
+    // 📖 Load recent log entries — bounded read, newest-first, malformed lines skipped.
+    const logRows = loadRecentLogs({ limit: 200 })
+
+    if (logRows.length === 0) {
+      lines.push(chalk.dim('  No log entries found.'))
+      lines.push(chalk.dim('  Logs are written to ~/.free-coding-models/request-log.jsonl'))
+      lines.push(chalk.dim('  when requests are proxied through the multi-account rotation proxy.'))
+    } else {
+      // 📖 Column widths for the log table
+      const W_TIME    = 22
+      const W_PROV    = 14
+      const W_MODEL   = 36
+      const W_STATUS  = 8
+      const W_TOKENS  = 9
+      const W_LAT     = 10
+
+      // 📖 Header row
+      const hTime   = chalk.dim('Time'.padEnd(W_TIME))
+      const hProv   = chalk.dim('Provider'.padEnd(W_PROV))
+      const hModel  = chalk.dim('Model'.padEnd(W_MODEL))
+      const hStatus = chalk.dim('Status'.padEnd(W_STATUS))
+      const hTok    = chalk.dim('Tokens'.padEnd(W_TOKENS))
+      const hLat    = chalk.dim('Latency'.padEnd(W_LAT))
+      lines.push(`  ${hTime}  ${hProv}  ${hModel}  ${hStatus}  ${hTok}  ${hLat}`)
+      lines.push(chalk.dim('  ' + '─'.repeat(W_TIME + W_PROV + W_MODEL + W_STATUS + W_TOKENS + W_LAT + 10)))
+
+      for (const row of logRows) {
+        // 📖 Format time as HH:MM:SS (strip the date part for compactness)
+        let timeStr = row.time
+        try {
+          const d = new Date(row.time)
+          if (!isNaN(d)) {
+            timeStr = d.toISOString().replace('T', ' ').slice(0, 19)
+          }
+        } catch { /* keep raw */ }
+
+        // 📖 Color-code status
+        let statusCell
+        const sc = String(row.status)
+        if (sc === '200') {
+          statusCell = chalk.greenBright(sc.padEnd(W_STATUS))
+        } else if (sc === '429') {
+          statusCell = chalk.yellow(sc.padEnd(W_STATUS))
+        } else if (sc.startsWith('5') || sc === 'error') {
+          statusCell = chalk.red(sc.padEnd(W_STATUS))
+        } else {
+          statusCell = chalk.dim(sc.padEnd(W_STATUS))
+        }
+
+        const tokStr = row.tokens > 0 ? String(row.tokens) : '--'
+        const latStr = row.latency > 0 ? `${row.latency}ms` : '--'
+
+        const timeCell  = chalk.dim(timeStr.slice(0, W_TIME).padEnd(W_TIME))
+        const provCell  = chalk.cyan(row.provider.slice(0, W_PROV).padEnd(W_PROV))
+        const modelCell = chalk.white(row.model.slice(0, W_MODEL).padEnd(W_MODEL))
+        const tokCell   = chalk.dim(tokStr.padEnd(W_TOKENS))
+        const latCell   = chalk.dim(latStr.padEnd(W_LAT))
+
+        lines.push(`  ${timeCell}  ${provCell}  ${modelCell}  ${statusCell}  ${tokCell}  ${latCell}`)
+      }
+    }
+
+    lines.push('')
+    lines.push(chalk.dim(`  Showing up to 200 most recent entries  •  X or Esc close`))
+    lines.push('')
+
+    const { visible, offset } = sliceOverlayLines(lines, state.logScrollOffset, state.terminalRows)
+    state.logScrollOffset = offset
+    const tintedLines = tintOverlayLines(visible, LOG_OVERLAY_BG)
+    const cleared = tintedLines.map(l => l + EL)
+    return cleared.join('\n')
+  }
+
+
   // 📖 renderRecommend: Draw the Smart Recommend overlay with 3 phases:
   //   1. 'questionnaire' — ask 3 questions (task type, priority, context budget)
   //   2. 'analyzing' — loading screen with progress bar (10s, 2 pings/sec)
@@ -3925,6 +4059,23 @@ async function main() {
       return
     }
 
+    // 📖 Log page overlay: full keyboard navigation + key swallowing while overlay is open.
+    if (state.logVisible) {
+      const pageStep = Math.max(1, (state.terminalRows || 1) - 2)
+      if (key.name === 'escape' || key.name === 'x') {
+        state.logVisible = false
+        return
+      }
+      if (key.name === 'up') { state.logScrollOffset = Math.max(0, state.logScrollOffset - 1); return }
+      if (key.name === 'down') { state.logScrollOffset += 1; return }
+      if (key.name === 'pageup') { state.logScrollOffset = Math.max(0, state.logScrollOffset - pageStep); return }
+      if (key.name === 'pagedown') { state.logScrollOffset += pageStep; return }
+      if (key.name === 'home') { state.logScrollOffset = 0; return }
+      if (key.name === 'end') { state.logScrollOffset = Number.MAX_SAFE_INTEGER; return }
+      if (key.ctrl && key.name === 'c') { exit(0); return }
+      return
+    }
+
     // 📖 Smart Recommend overlay: full keyboard handling while overlay is open.
     if (state.recommendOpen) {
       if (key.ctrl && key.name === 'c') { exit(0); return }
@@ -4232,15 +4383,19 @@ async function main() {
 
       if (key.ctrl && key.name === 'c') { exit(0); return }
 
-      // 📖 S key: sync FCM provider entries to OpenCode config (merge, don't replace)
-      if (key.name === 's' && !key.shift && !key.ctrl) {
-        try {
-          const proxyStatus = activeProxy?.getStatus?.()
-          const result = syncToOpenCode(state.config, sources, mergedModels, {
-            useProxy: !!activeProxy,
-            proxyPort: proxyStatus?.port,
-          })
-          state.settingsSyncStatus = { type: 'success', msg: `✅ Synced ${result.providersAdded} provider(s) to OpenCode` }
+       // 📖 S key: sync FCM provider entries to OpenCode config (merge, don't replace)
+       if (key.name === 's' && !key.shift && !key.ctrl) {
+         try {
+           // 📖 Only pass runtime proxy port/token when the proxy is actively running.
+           // 📖 If the proxy exists but was stopped, proxyStatus.running === false and
+           // 📖 we must NOT pass stale port/token values — fall back to existing config instead.
+           const proxyStatus = activeProxy?.getStatus?.()
+           const proxyRunning = proxyStatus?.running === true
+           const result = syncToOpenCode(state.config, sources, mergedModels, {
+             proxyPort: proxyRunning ? proxyStatus.port : undefined,
+             proxyToken: proxyRunning ? activeProxy?._proxyApiKey : undefined,
+           })
+          state.settingsSyncStatus = { type: 'success', msg: `✅ Synced ${result.providerKey} (${result.modelCount} models) to OpenCode` }
         } catch (err) {
           state.settingsSyncStatus = { type: 'error', msg: `❌ Sync failed: ${err.message}` }
         }
@@ -4366,6 +4521,7 @@ async function main() {
     // 📖 Sorting keys: R=rank, Y=tier, O=origin, M=model, L=latest ping, A=avg ping, S=SWE-bench, C=context, H=health, V=verdict, B=stability, U=uptime
     // 📖 T is reserved for tier filter cycling — tier sort moved to Y
     // 📖 N is now reserved for origin filter cycling
+    // 📖 G (Shift+G) is handled separately below for usage sort
     const sortKeys = {
       'r': 'rank', 'y': 'tier', 'o': 'origin', 'm': 'model',
       'l': 'ping', 'a': 'avg', 's': 'swe', 'c': 'ctx', 'h': 'condition', 'v': 'verdict', 'b': 'stability', 'u': 'uptime'
@@ -4381,6 +4537,22 @@ async function main() {
         state.sortDirection = 'asc'
       }
       // 📖 Recompute visible sorted list and reset cursor to top to avoid stale index
+      const visible = state.results.filter(r => !r.hidden)
+      state.visibleSorted = sortResultsWithPinnedFavorites(visible, state.sortColumn, state.sortDirection)
+      state.cursor = 0
+      state.scrollOffset = 0
+      return
+    }
+
+    // 📖 Shift+G: sort by usage (quota percent remaining from token-stats.json)
+    if (key.name === 'g' && key.shift && !key.ctrl) {
+      const col = 'usage'
+      if (state.sortColumn === col) {
+        state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc'
+      } else {
+        state.sortColumn = col
+        state.sortDirection = 'asc'
+      }
       const visible = state.results.filter(r => !r.hidden)
       state.visibleSorted = sortResultsWithPinnedFavorites(visible, state.sortColumn, state.sortDirection)
       state.cursor = 0
@@ -4432,11 +4604,12 @@ async function main() {
       return
     }
 
-    // 📖 Interval adjustment keys: W=decrease (faster), X=increase (slower)
+    // 📖 Interval adjustment keys: W=decrease (faster), ==increase (slower)
+    // 📖 X was previously used for interval increase but is now reserved for the log page overlay.
     // 📖 Minimum 1s, maximum 60s
     if (key.name === 'w') {
       state.pingInterval = Math.max(1000, state.pingInterval - 1000)
-    } else if (key.name === 'x') {
+    } else if (str === '=' || key.name === '=') {
       state.pingInterval = Math.min(60000, state.pingInterval + 1000)
     }
 
@@ -4480,8 +4653,11 @@ async function main() {
       return
     }
 
+    // 📖 X key: toggle the log page overlay (shows recent requests from request-log.jsonl).
+    // 📖 NOTE: X was previously used for ping-interval increase; that binding moved to '='.
     if (key.name === 'x') {
-      state.pingInterval = Math.min(60000, state.pingInterval + 1000)
+      state.logVisible = !state.logVisible
+      if (state.logVisible) state.logScrollOffset = 0
       return
     }
 
@@ -4551,23 +4727,28 @@ async function main() {
       } else if (state.mode === 'opencode-desktop') {
         await startOpenCodeDesktop(userSelected, state.config)
       } else {
-        // 📖 Multi-account proxy: if the selected model is available on 2+ providers with API keys,
-        // 📖 build account list and start a rotation proxy. Fall back to direct flow if 0–1 accounts.
-        const merged = mergedModelByLabel.get(selected.label)
-        if (merged && merged.providerCount > 1) {
-          // 📖 Build accounts array: one entry per provider that has an API key configured
-          const accounts = []
-          for (const p of merged.providers) {
-            const keys = resolveApiKeys(state.config, p.providerKey)
-            const providerSource = sources[p.providerKey]
-            if (!providerSource) continue
-            // 📖 Resolve Cloudflare account_id placeholder, then strip trailing /chat/completions
-            const rawUrl = resolveCloudflareUrl(providerSource.url)
-            const baseUrl = rawUrl.replace(/\/chat\/completions$/, '')
-            for (const key of keys) {
-              accounts.push({ url: baseUrl, apiKey: key, modelId: p.modelId })
-            }
-          }
+         // 📖 Multi-account proxy: if the selected model is available on 2+ providers with API keys,
+         // 📖 build account list and start a rotation proxy. Fall back to direct flow if 0–1 accounts.
+         const merged = mergedModelByLabel.get(selected.label)
+         if (merged && merged.providerCount > 1) {
+           // 📖 Build accounts array: one entry per provider that has an API key configured
+           const accounts = []
+           for (const p of merged.providers) {
+             const keys = resolveApiKeys(state.config, p.providerKey)
+             const providerSource = sources[p.providerKey]
+             if (!providerSource) continue
+             // 📖 Resolve Cloudflare account_id placeholder, then strip trailing /chat/completions
+             const rawUrl = resolveCloudflareUrl(providerSource.url)
+             const baseUrl = rawUrl.replace(/\/chat\/completions$/, '')
+             // 📖 Build deterministic id: providerKey/modelId for single key,
+             // 📖 providerKey/modelId/N for multi-key providers to keep ids unique.
+             keys.forEach((key, keyIdx) => {
+               const id = keys.length === 1
+                 ? `${p.providerKey}/${p.modelId}`
+                 : `${p.providerKey}/${p.modelId}/${keyIdx}`
+               accounts.push({ id, providerKey: p.providerKey, url: baseUrl, apiKey: key, modelId: p.modelId })
+             })
+           }
           if (accounts.length === 0) {
             console.log(chalk.yellow(`  No API keys found for any provider of ${selected.label}. Falling back to direct flow.`))
             console.log()
@@ -4612,7 +4793,9 @@ async function main() {
             ? renderBugReport()
             : state.helpVisible
               ? renderHelp()
-              : renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, tierFilterMode, state.scrollOffset, state.terminalRows, originFilterMode, state.activeProfile, state.profileSaveMode, state.profileSaveBuffer)
+              : state.logVisible
+                ? renderLog()
+                : renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, tierFilterMode, state.scrollOffset, state.terminalRows, originFilterMode, state.activeProfile, state.profileSaveMode, state.profileSaveBuffer)
     process.stdout.write(ALT_HOME + content)
   }, Math.round(1000 / FPS))
 

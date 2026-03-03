@@ -543,6 +543,38 @@ describe('sortResults', () => {
     const sorted = sortResults([spiky, stable], 'stability', 'desc')
     assert.equal(sorted[0].label, 'Stable')
   })
+
+  it('sorts by usage ascending (low usagePercent first)', () => {
+    const results = [
+      mockResult({ label: 'HighUsage', usagePercent: 80 }),
+      mockResult({ label: 'LowUsage',  usagePercent: 20 }),
+      mockResult({ label: 'MedUsage',  usagePercent: 50 }),
+    ]
+    const sorted = sortResults(results, 'usage', 'asc')
+    assert.equal(sorted[0].label, 'LowUsage')
+    assert.equal(sorted[1].label, 'MedUsage')
+    assert.equal(sorted[2].label, 'HighUsage')
+  })
+
+  it('sorts by usage descending (high usagePercent first)', () => {
+    const results = [
+      mockResult({ label: 'LowUsage',  usagePercent: 20 }),
+      mockResult({ label: 'HighUsage', usagePercent: 80 }),
+    ]
+    const sorted = sortResults(results, 'usage', 'desc')
+    assert.equal(sorted[0].label, 'HighUsage')
+    assert.equal(sorted[1].label, 'LowUsage')
+  })
+
+  it('treats missing usagePercent as 0 when sorting by usage ascending', () => {
+    const results = [
+      mockResult({ label: 'HasUsage', usagePercent: 50 }),
+      mockResult({ label: 'NoUsage' }),  // no usagePercent field → treated as 0
+    ]
+    const sorted = sortResults(results, 'usage', 'asc')
+    assert.equal(sorted[0].label, 'NoUsage')
+    assert.equal(sorted[1].label, 'HasUsage')
+  })
 })
 
 describe('findBestModel', () => {

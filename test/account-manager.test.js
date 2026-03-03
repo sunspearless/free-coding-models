@@ -128,4 +128,42 @@ describe('AccountManager', () => {
     const after = am.getHealth('acct-0').score
     assert.ok(after > before, 'Health should improve after success')
   })
+
+  it('getAllHealth returns snapshot keyed by account id with score and quotaPercent', () => {
+    const accounts = makeAccounts(3)
+    const am = new AccountManager(accounts)
+    am.updateQuota('acct-0', { 'x-ratelimit-remaining': '50', 'x-ratelimit-limit': '100' })
+    am.recordSuccess('acct-1', 200)
+
+    const health = am.getAllHealth()
+
+    assert.ok(typeof health === 'object' && health !== null)
+    assert.ok('acct-0' in health, 'snapshot should include acct-0')
+    assert.ok('acct-1' in health, 'snapshot should include acct-1')
+    assert.ok('acct-2' in health, 'snapshot should include acct-2')
+
+    assert.strictEqual(typeof health['acct-0'].score, 'number')
+    assert.strictEqual(health['acct-0'].quotaPercent, 50)
+
+    assert.strictEqual(typeof health['acct-1'].score, 'number')
+    assert.strictEqual(health['acct-1'].quotaPercent, 100)
+  })
+
+  it('getAllHealth includes providerKey and modelId identity fields', () => {
+    const accounts = makeAccounts(2)
+    const am = new AccountManager(accounts)
+
+    const health = am.getAllHealth()
+
+    assert.strictEqual(health['acct-0'].providerKey, 'provider-0')
+    assert.strictEqual(health['acct-0'].modelId, 'model-0')
+    assert.strictEqual(health['acct-1'].providerKey, 'provider-1')
+    assert.strictEqual(health['acct-1'].modelId, 'model-1')
+  })
+
+  it('getAllHealth returns empty object when no accounts', () => {
+    const am = new AccountManager([])
+    const health = am.getAllHealth()
+    assert.deepStrictEqual(health, {})
+  })
 })

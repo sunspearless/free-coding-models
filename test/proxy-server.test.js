@@ -211,4 +211,54 @@ describe('ProxyServer', () => {
     const res = await makeRequest(port, { model: 'test', messages: [{ role: 'user', content: 'hi' }] })
     assert.strictEqual(res.statusCode, 503)
   })
+
+  it('getStatus returns running, port, accountCount and healthByAccount', async () => {
+    const upstream = await createMockUpstream({})
+    cleanups.push(() => upstream.server.close())
+
+    const accounts = [
+      { id: 'status-acct-1', providerKey: 'prov1', apiKey: 'k1', modelId: 'model-a', url: upstream.url + '/v1' },
+      { id: 'status-acct-2', providerKey: 'prov2', apiKey: 'k2', modelId: 'model-b', url: upstream.url + '/v1' },
+    ]
+    const proxy = new ProxyServer({ port: 0, accounts, proxyApiKey: 'test-secret-token' })
+    const { port } = await proxy.start()
+    cleanups.push(() => proxy.stop())
+
+    const status = proxy.getStatus()
+
+    assert.strictEqual(status.running, true)
+    assert.strictEqual(status.port, port)
+    assert.strictEqual(status.accountCount, 2)
+
+    // healthByAccount must be present and keyed by account id
+    assert.ok('healthByAccount' in status, 'status must include healthByAccount')
+    assert.ok('status-acct-1' in status.healthByAccount, 'healthByAccount must include status-acct-1')
+    assert.ok('status-acct-2' in status.healthByAccount, 'healthByAccount must include status-acct-2')
+
+    const h1 = status.healthByAccount['status-acct-1']
+    assert.strictEqual(typeof h1.score, 'number', 'health entry must have numeric score')
+    assert.strictEqual(typeof h1.quotaPercent, 'number', 'health entry must have numeric quotaPercent')
+
+    // API keys must NOT be present in status
+    assert.ok(!('proxyApiKey' in status), 'status must not expose proxyApiKey')
+    assert.ok(!('apiKey' in status), 'status must not expose apiKey')
+  })
+
+  it('getStatus healthByAccount reflects account provider and model identity', async () => {
+    const upstream = await createMockUpstream({})
+    cleanups.push(() => upstream.server.close())
+
+    const accounts = [
+      { id: 'identity-acct', providerKey: 'myprovider', apiKey: 'secret', modelId: 'my-model', url: upstream.url + '/v1' },
+    ]
+    const proxy = new ProxyServer({ port: 0, accounts })
+    await proxy.start()
+    cleanups.push(() => proxy.stop())
+
+    const status = proxy.getStatus()
+    const h = status.healthByAccount['identity-acct']
+
+    assert.strictEqual(h.providerKey, 'myprovider')
+    assert.strictEqual(h.modelId, 'my-model')
+  })
 })
