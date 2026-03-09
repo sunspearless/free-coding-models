@@ -118,7 +118,7 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
   }
 
   const normalizeOriginLabel = (name, key) => {
-    if (key === 'alibaba') return 'Alibaba'
+    if (key === 'qwen') return 'Alibaba'
     return name
   }
 
