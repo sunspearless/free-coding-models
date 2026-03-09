@@ -38,7 +38,7 @@ import {
 } from '../src/utils.js'
 import {
   _emptyProfileSettings, saveAsProfile, loadProfile, listProfiles,
-  deleteProfile, getActiveProfileName, setActiveProfile
+  deleteProfile, getActiveProfileName, setActiveProfile, getProxySettings, normalizeProxySettings
 } from '../src/config.js'
 import { buildProviderModelTokenKey, loadTokenUsageByProviderModel, formatTokenTotalCompact } from '../src/token-usage-reader.js'
 import { renderTable } from '../src/render-table.js'
@@ -1162,6 +1162,12 @@ describe('parseArgs --profile and --recommend', () => {
     assert.equal(result.recommendMode, true)
     assert.equal(result.openCodeMode, true)
   })
+
+  it('parses the proxy cleanup flags', () => {
+    assert.equal(parseArgs(argv('--clean-proxy')).cleanProxyMode, true)
+    assert.equal(parseArgs(argv('--proxy-clean')).cleanProxyMode, true)
+    assert.equal(parseArgs(argv()).cleanProxyMode, false)
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1173,7 +1179,10 @@ describe('config profile functions', () => {
     return {
       apiKeys: { nvidia: 'test-key' },
       providers: { nvidia: true },
-      settings: { hideUnconfiguredModels: true },
+      settings: {
+        hideUnconfiguredModels: true,
+        proxy: { enabled: false, syncToOpenCode: false, preferredPort: 0 },
+      },
       favorites: ['nvidia/test-model'],
       telemetry: { enabled: false },
       profiles: {},
@@ -1188,6 +1197,7 @@ describe('config profile functions', () => {
     assert.equal(settings.sortAsc, true)
     assert.equal(settings.pingInterval, 10000)
     assert.equal(settings.hideUnconfiguredModels, true)
+    assert.deepEqual(settings.proxy, { enabled: false, syncToOpenCode: false, preferredPort: 0 })
   })
 
   it('listProfiles returns empty array for fresh config', () => {
@@ -1215,12 +1225,20 @@ describe('config profile functions', () => {
     assert.equal(config.profiles.focused.settings.hideUnconfiguredModels, true)
   })
 
+  it('saveAsProfile can persist proxy settings', () => {
+    const config = mockConfig()
+    saveAsProfile(config, 'proxy', { proxy: { enabled: true, syncToOpenCode: true, preferredPort: 8045 } })
+    assert.deepEqual(config.profiles.proxy.settings.proxy, { enabled: true, syncToOpenCode: true, preferredPort: 8045 })
+  })
+
   it('loadProfile returns settings and sets activeProfile', () => {
     const config = mockConfig()
-    saveAsProfile(config, 'dev', { sortColumn: 'rank', sortAsc: true, pingInterval: 3000, hideUnconfiguredModels: true })
+    saveAsProfile(config, 'dev', { sortColumn: 'rank', sortAsc: true, pingInterval: 3000, hideUnconfiguredModels: true, proxy: { enabled: true, syncToOpenCode: true, preferredPort: 9000 } })
     const settings = loadProfile(config, 'dev')
     assert.equal(settings.sortColumn, 'rank')
     assert.equal(settings.hideUnconfiguredModels, true)
+    assert.equal(settings.proxy.enabled, true)
+    assert.equal(config.settings.proxy.preferredPort, 9000)
     assert.equal(config.activeProfile, 'dev')
   })
 
@@ -1279,6 +1297,16 @@ describe('config profile functions', () => {
     saveAsProfile(config, 'personal', { sortColumn: 'avg' })
     saveAsProfile(config, 'fast', { sortColumn: 'ping' })
     assert.deepEqual(listProfiles(config), ['fast', 'personal', 'work'])
+  })
+
+  it('normalizes proxy settings to disabled-by-default', () => {
+    assert.deepEqual(normalizeProxySettings(), { enabled: false, syncToOpenCode: false, preferredPort: 0 })
+    assert.deepEqual(getProxySettings({ settings: {} }), { enabled: false, syncToOpenCode: false, preferredPort: 0 })
+    assert.deepEqual(getProxySettings({ settings: { proxy: { enabled: true, syncToOpenCode: true, preferredPort: 8123 } } }), {
+      enabled: true,
+      syncToOpenCode: true,
+      preferredPort: 8123,
+    })
   })
 })
 
@@ -1350,12 +1378,12 @@ describe('token-usage-reader', () => {
     assert.equal(buildProviderModelTokenKey('groq', 'openai/gpt-oss-120b'), 'groq::openai/gpt-oss-120b')
   })
 
-  it('formatTokenTotalCompact renders raw, k, and M without decimals', () => {
+  it('formatTokenTotalCompact renders raw, k, and M with 2 decimals', () => {
     assert.equal(formatTokenTotalCompact(0), '0')
     assert.equal(formatTokenTotalCompact(999), '999')
-    assert.equal(formatTokenTotalCompact(1234), '1k')
-    assert.equal(formatTokenTotalCompact(999999), '999k')
-    assert.equal(formatTokenTotalCompact(1456789), '1M')
+    assert.equal(formatTokenTotalCompact(1234), '1.23k')
+    assert.equal(formatTokenTotalCompact(999999), '1.00M')
+    assert.equal(formatTokenTotalCompact(1456789), '1.46M')
   })
 
   it('loadTokenUsageByProviderModel aggregates tokens per exact provider/model pair', () => {

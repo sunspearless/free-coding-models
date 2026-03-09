@@ -18,7 +18,7 @@
  * @functions
  *   → `buildProviderModelTokenKey` — creates a stable aggregation key
  *   → `loadTokenUsageByProviderModel` — reads request-log.jsonl and returns total tokens by provider+model
- *   → `formatTokenTotalCompact` — renders totals as integer K / M strings for narrow columns
+ *   → `formatTokenTotalCompact` — renders totals as raw ints or compact K / M strings with 2 decimals
  *
  * @exports buildProviderModelTokenKey, loadTokenUsageByProviderModel, formatTokenTotalCompact
  *
@@ -53,11 +53,11 @@ export function loadTokenUsageByProviderModel({ logFile, limit = 50_000 } = {}) 
   return totals
 }
 
-// 📖 formatTokenTotalCompact keeps the new column narrow and scannable:
-// 📖 0-999 => raw integer, 1k-999k => Nk, 1m+ => NM, no decimals.
+// 📖 formatTokenTotalCompact keeps token counts readable in both the table and log view:
+// 📖 0-999 => raw integer, 1k-999k => N.NNk, 1m+ => N.NNM.
 export function formatTokenTotalCompact(totalTokens) {
   const safeTotal = Number(totalTokens) || 0
-  if (safeTotal >= 1_000_000) return `${Math.floor(safeTotal / 1_000_000)}M`
-  if (safeTotal >= 1_000) return `${Math.floor(safeTotal / 1_000)}k`
+  if (safeTotal >= 999_500) return `${(safeTotal / 1_000_000).toFixed(2)}M`
+  if (safeTotal >= 1_000) return `${(safeTotal / 1_000).toFixed(2)}k`
   return String(Math.floor(safeTotal))
 }

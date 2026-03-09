@@ -7,10 +7,12 @@
 ### Added
 
 - 🧰 Added direct launch modes for `Aider`, `Crush`, `Goose`, `Claude Code`, `Codex CLI`, `Gemini CLI`, `Qwen Code`, `OpenHands`, `Amp`, and `Pi`, so pressing `Enter` can now auto-configure and start more than just OpenCode/OpenClaw.
+- 🧹 Added OpenCode proxy cleanup in Settings plus a `--clean-proxy` CLI command to remove persisted `fcm-proxy` config safely.
 
 ### Changed
 
 - 🧭 Extended the `Z` tool cycle, CLI flag parser, help overlay, and header mode badge so the active target tool is visible and switchable across all supported launchers.
+- 🔀 Made the multi-account proxy opt-in and disabled by default, added Settings controls for proxy enablement, OpenCode persistence, and preferred port, and restored direct OpenCode launch as the default path.
 
 ---
 

@@ -18,7 +18,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeOcConfig } from '../src/opencode-sync.js'
+import { mergeOcConfig, removeFcmProxyFromConfig } from '../src/opencode-sync.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -133,6 +133,31 @@ describe('mergeOcConfig — single-provider merge preservation', () => {
     // Still only 3 providers (anthropic, openai, fcm-proxy)
     assert.equal(Object.keys(oc.provider).length, 3)
     assert.ok(oc.provider['anthropic'], 'anthropic still present after second sync')
+  })
+})
+
+describe('removeFcmProxyFromConfig', () => {
+  it('removes only fcm-proxy and its default model', () => {
+    const oc = baseOcConfig()
+    mergeOcConfig(oc, mockMergedModels(2), { proxyPort: 8045, proxyToken: 'tok' })
+    oc.model = 'fcm-proxy/model-1'
+
+    const result = removeFcmProxyFromConfig(oc)
+
+    assert.equal(result.removedProvider, true)
+    assert.equal(result.removedModel, true)
+    assert.equal(oc.provider['fcm-proxy'], undefined)
+    assert.ok(oc.provider.anthropic, 'anthropic provider must survive cleanup')
+    assert.equal(oc.model, undefined)
+  })
+
+  it('is a no-op when fcm-proxy is absent', () => {
+    const oc = baseOcConfig()
+    const result = removeFcmProxyFromConfig(oc)
+    assert.equal(result.removedProvider, false)
+    assert.equal(result.removedModel, false)
+    assert.ok(oc.provider.anthropic)
+    assert.equal(oc.model, 'anthropic/claude-opus-4-5')
   })
 })
 

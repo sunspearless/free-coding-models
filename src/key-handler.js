@@ -104,6 +104,7 @@ export function createKeyHandler(ctx) {
     MODELS,
     sources,
     getApiKey,
+    getProxySettings,
     resolveApiKeys,
     addApiKey,
     removeApiKey,
@@ -125,6 +126,7 @@ export function createKeyHandler(ctx) {
     ENV_VAR_NAMES,
     ensureProxyRunning,
     syncToOpenCode,
+    cleanupOpenCodeProxyConfig,
     restoreOpenCodeBackup,
     checkForUpdateDetailed,
     runUpdate,
@@ -134,6 +136,7 @@ export function createKeyHandler(ctx) {
     startProxyAndLaunch,
     startExternalTool,
     buildProxyTopologyFromConfig,
+    isProxyEnabledForConfig,
     getToolModeOrder,
     startRecommendAnalysis,
     stopRecommendAnalysis,
@@ -263,6 +266,7 @@ export function createKeyHandler(ctx) {
             sortAsc: state.sortDirection === 'asc',
             pingInterval: state.pingInterval,
             hideUnconfiguredModels: state.hideUnconfiguredModels,
+            proxy: getProxySettings(state.config),
           })
           setActiveProfile(state.config, name)
           state.activeProfile = name
@@ -560,12 +564,17 @@ export function createKeyHandler(ctx) {
 
     // ─── Settings overlay keyboard handling ───────────────────────────────────
     if (state.settingsOpen) {
+      const proxySettings = getProxySettings(state.config)
       const providerKeys = Object.keys(sources)
       const updateRowIdx = providerKeys.length
-      // 📖 Profile rows start after update row — one row per saved profile
+      const proxyEnabledRowIdx = updateRowIdx + 1
+      const proxySyncRowIdx = updateRowIdx + 2
+      const proxyPortRowIdx = updateRowIdx + 3
+      const proxyCleanupRowIdx = updateRowIdx + 4
+      // 📖 Profile rows start after maintenance + proxy rows — one row per saved profile
       const savedProfiles = listProfiles(state.config)
-      const profileStartIdx = updateRowIdx + 1
-      const maxRowIdx = savedProfiles.length > 0 ? profileStartIdx + savedProfiles.length - 1 : updateRowIdx
+      const profileStartIdx = updateRowIdx + 5
+      const maxRowIdx = savedProfiles.length > 0 ? profileStartIdx + savedProfiles.length - 1 : proxyCleanupRowIdx
 
       // 📖 Edit/Add-key mode: capture typed characters for the API key
       if (state.settingsEditMode || state.settingsAddKeyMode) {
@@ -610,12 +619,40 @@ export function createKeyHandler(ctx) {
         return
       }
 
+      // 📖 Dedicated inline editor for the preferred proxy port. 0 = OS auto-port.
+      if (state.settingsProxyPortEditMode) {
+        if (key.name === 'return') {
+          const raw = state.settingsProxyPortBuffer.trim()
+          const parsed = raw === '' ? 0 : Number.parseInt(raw, 10)
+          if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+            state.settingsSyncStatus = { type: 'error', msg: '❌ Proxy port must be 0 (auto) or a number between 1 and 65535' }
+            return
+          }
+          if (!state.config.settings) state.config.settings = {}
+          state.config.settings.proxy = { ...proxySettings, preferredPort: parsed }
+          saveConfig(state.config)
+          state.settingsProxyPortEditMode = false
+          state.settingsProxyPortBuffer = ''
+          state.settingsSyncStatus = { type: 'success', msg: `✅ Preferred proxy port saved: ${parsed === 0 ? 'auto' : parsed}` }
+        } else if (key.name === 'escape') {
+          state.settingsProxyPortEditMode = false
+          state.settingsProxyPortBuffer = ''
+        } else if (key.name === 'backspace') {
+          state.settingsProxyPortBuffer = state.settingsProxyPortBuffer.slice(0, -1)
+        } else if (str && /^[0-9]$/.test(str) && state.settingsProxyPortBuffer.length < 5) {
+          state.settingsProxyPortBuffer += str
+        }
+        return
+      }
+
       // 📖 Normal settings navigation
       if (key.name === 'escape' || key.name === 'p') {
         // 📖 Close settings — rebuild results to reflect provider changes
         state.settingsOpen = false
         state.settingsEditMode = false
         state.settingsAddKeyMode = false
+        state.settingsProxyPortEditMode = false
+        state.settingsProxyPortBuffer = ''
         state.settingsEditBuffer = ''
         state.settingsSyncStatus = null  // 📖 Clear sync status on close
         // 📖 Rebuild results: add models from newly enabled providers, remove disabled
@@ -696,6 +733,21 @@ export function createKeyHandler(ctx) {
           return
         }
 
+        if (state.settingsCursor === proxyPortRowIdx) {
+          state.settingsProxyPortEditMode = true
+          state.settingsProxyPortBuffer = String(proxySettings.preferredPort || 0)
+          return
+        }
+
+        if (state.settingsCursor === proxyCleanupRowIdx) {
+          const cleaned = cleanupOpenCodeProxyConfig()
+          state.settingsSyncStatus = {
+            type: 'success',
+            msg: `✅ Proxy cleanup done (${cleaned.removedProvider ? 'provider removed' : 'no provider found'}, ${cleaned.removedModel ? 'default model cleared' : 'default model unchanged'})`,
+          }
+          return
+        }
+
         // 📖 Profile row: Enter → load the selected profile (apply its settings live)
         if (state.settingsCursor >= profileStartIdx && savedProfiles.length > 0) {
           const profileIdx = state.settingsCursor - profileStartIdx
@@ -731,9 +783,26 @@ export function createKeyHandler(ctx) {
       }
 
       if (key.name === 'space') {
-        if (state.settingsCursor === updateRowIdx) return
+        if (state.settingsCursor === updateRowIdx || state.settingsCursor === proxyPortRowIdx || state.settingsCursor === proxyCleanupRowIdx) return
         // 📖 Profile rows don't respond to Space
         if (state.settingsCursor >= profileStartIdx) return
+
+        if (state.settingsCursor === proxyEnabledRowIdx || state.settingsCursor === proxySyncRowIdx) {
+          if (!state.config.settings) state.config.settings = {}
+          state.config.settings.proxy = {
+            ...proxySettings,
+            enabled: state.settingsCursor === proxyEnabledRowIdx ? !proxySettings.enabled : proxySettings.enabled,
+            syncToOpenCode: state.settingsCursor === proxySyncRowIdx ? !proxySettings.syncToOpenCode : proxySettings.syncToOpenCode,
+          }
+          saveConfig(state.config)
+          state.settingsSyncStatus = {
+            type: 'success',
+            msg: state.settingsCursor === proxyEnabledRowIdx
+              ? `✅ Proxy mode ${state.config.settings.proxy.enabled ? 'enabled' : 'disabled'}`
+              : `✅ OpenCode proxy sync ${state.config.settings.proxy.syncToOpenCode ? 'enabled' : 'disabled'}`,
+          }
+          return
+        }
 
         // 📖 Toggle enabled/disabled for selected provider
         const pk = providerKeys[state.settingsCursor]
@@ -787,6 +856,14 @@ export function createKeyHandler(ctx) {
        // 📖 S key: sync FCM provider entries to OpenCode config (merge, don't replace)
         if (key.name === 's' && !key.shift && !key.ctrl) {
           try {
+            if (!proxySettings.enabled) {
+              state.settingsSyncStatus = { type: 'error', msg: '⚠ Enable Proxy mode first if you want to sync fcm-proxy into OpenCode' }
+              return
+            }
+            if (!proxySettings.syncToOpenCode) {
+              state.settingsSyncStatus = { type: 'error', msg: '⚠ Enable "Persist proxy in OpenCode" first, or use the direct OpenCode flow only' }
+              return
+            }
             // 📖 Sync now also ensures proxy is running, so OpenCode can use fcm-proxy immediately.
             const started = await ensureProxyRunning(state.config)
             const result = syncToOpenCode(state.config, sources, mergedModels, {
@@ -849,6 +926,8 @@ export function createKeyHandler(ctx) {
       state.settingsCursor = 0
       state.settingsEditMode = false
       state.settingsAddKeyMode = false
+      state.settingsProxyPortEditMode = false
+      state.settingsProxyPortBuffer = ''
       state.settingsEditBuffer = ''
       state.settingsScrollOffset = 0
       return
@@ -877,6 +956,7 @@ export function createKeyHandler(ctx) {
           sortAsc: state.sortDirection === 'asc',
           pingInterval: state.pingInterval,
           hideUnconfiguredModels: state.hideUnconfiguredModels,
+          proxy: getProxySettings(state.config),
         })
         setActiveProfile(state.config, 'default')
         state.activeProfile = 'default'
@@ -1142,12 +1222,14 @@ export function createKeyHandler(ctx) {
         await startOpenCodeDesktop(userSelected, state.config)
       } else if (state.mode === 'opencode') {
         const topology = buildProxyTopologyFromConfig(state.config)
-        if (topology.accounts.length === 0) {
-          console.log(chalk.yellow('  No API keys found for proxy model catalog. Falling back to direct flow.'))
-          console.log()
-          await startOpenCode(userSelected, state.config)
-        } else {
+        if (isProxyEnabledForConfig(state.config) && topology.accounts.length > 0) {
           await startProxyAndLaunch(userSelected, state.config)
+        } else {
+          if (isProxyEnabledForConfig(state.config) && topology.accounts.length === 0) {
+            console.log(chalk.yellow('  Proxy mode is enabled, but no proxy-capable API keys were found. Falling back to direct flow.'))
+            console.log()
+          }
+          await startOpenCode(userSelected, state.config)
         }
       } else {
         await startExternalTool(state.mode, userSelected, state.config)

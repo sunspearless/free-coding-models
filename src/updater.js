@@ -44,6 +44,7 @@
 
 import chalk from 'chalk'
 import { createRequire } from 'module'
+import { accessSync, constants } from 'fs'
 
 const require = createRequire(import.meta.url)
 const readline = require('readline')
@@ -78,60 +79,157 @@ export async function checkForUpdate() {
 }
 
 /**
+ * 📖 detectGlobalInstallPermission: check whether npm global install paths are writable.
+ * 📖 On sudo-based systems (Arch, many Linux/macOS setups), `npm i -g` will fail with EACCES
+ * 📖 if the current user cannot write to the resolved global root/prefix.
+ * 📖 We probe those paths ahead of time so the updater can go straight to an interactive
+ * 📖 `sudo npm i -g ...` instead of printing a wall of permission errors first.
+ * @returns {{ needsSudo: boolean, checkedPath: string|null }}
+ */
+function detectGlobalInstallPermission() {
+  const { execFileSync } = require('child_process')
+  const candidates = []
+
+  try {
+    const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    if (npmRoot) candidates.push(npmRoot)
+  } catch {}
+
+  try {
+    const npmPrefix = execFileSync('npm', ['prefix', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    if (npmPrefix) candidates.push(npmPrefix)
+  } catch {}
+
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.W_OK)
+    } catch {
+      return { needsSudo: true, checkedPath: candidate }
+    }
+  }
+
+  return { needsSudo: false, checkedPath: candidates[0] || null }
+}
+
+/**
+ * 📖 hasSudoCommand: lightweight guard so we don't suggest sudo on systems where it does not exist.
+ * @returns {boolean}
+ */
+function hasSudoCommand() {
+  const { spawnSync } = require('child_process')
+  const result = spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore', shell: false })
+  return result.status === 0 || result.status === 1
+}
+
+/**
+ * 📖 isPermissionError: normalize npm permission failures across platforms and child-process APIs.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isPermissionError(err) {
+  const message = err instanceof Error ? err.message : String(err || '')
+  const stderr = typeof err?.stderr === 'string' ? err.stderr : ''
+  const combined = `${message}\n${stderr}`.toLowerCase()
+  return (
+    err?.code === 'EACCES' ||
+    err?.code === 'EPERM' ||
+    combined.includes('eacces') ||
+    combined.includes('eperm') ||
+    combined.includes('permission denied') ||
+    combined.includes('operation not permitted')
+  )
+}
+
+/**
+ * 📖 relaunchCurrentProcess: restart free-coding-models with the same user arguments.
+ * 📖 Uses spawn with inherited stdio so the new process is interactive and does not require shell escaping.
+ */
+function relaunchCurrentProcess() {
+  const { spawn } = require('child_process')
+  console.log(chalk.dim('  🔄 Restarting with new version...'))
+  console.log()
+
+  const args = process.argv.slice(1)
+  const child = spawn(process.execPath, args, {
+    stdio: 'inherit',
+    detached: false,
+    shell: false,
+    env: process.env,
+  })
+
+  child.on('exit', (code) => process.exit(code ?? 0))
+  child.on('error', () => process.exit(0))
+}
+
+/**
+ * 📖 installUpdateCommand: run npm global install, optionally prefixed with sudo.
+ * @param {string} latestVersion
+ * @param {boolean} useSudo
+ */
+function installUpdateCommand(latestVersion, useSudo) {
+  const { execFileSync } = require('child_process')
+  const npmArgs = ['i', '-g', `free-coding-models@${latestVersion}`, '--prefer-online']
+
+  if (useSudo) {
+    execFileSync('sudo', ['npm', ...npmArgs], { stdio: 'inherit', shell: false })
+    return
+  }
+
+  execFileSync('npm', npmArgs, { stdio: 'inherit', shell: false })
+}
+
+/**
  * 📖 runUpdate: Run npm global install to update to latestVersion.
  * 📖 Retries with sudo on permission errors.
  * 📖 Relaunches the process on success, exits with code 1 on failure.
  * @param {string} latestVersion
  */
 export function runUpdate(latestVersion) {
-  const { execSync } = require('child_process')
   console.log()
   console.log(chalk.bold.cyan('  ⬆ Updating free-coding-models to v' + latestVersion + '...'))
   console.log()
 
-  try {
-    // 📖 Force install from npm registry (ignore local cache)
-    // 📖 Use --prefer-online to ensure we get the latest published version
-    execSync(`npm i -g free-coding-models@${latestVersion} --prefer-online`, { stdio: 'inherit' })
-    console.log()
-    console.log(chalk.green('  ✅ Update complete! Version ' + latestVersion + ' installed.'))
-    console.log()
-    console.log(chalk.dim('  🔄 Restarting with new version...'))
-    console.log()
+  const { needsSudo, checkedPath } = detectGlobalInstallPermission()
+  const sudoAvailable = process.platform !== 'win32' && hasSudoCommand()
 
-    // 📖 Relaunch automatically with the same arguments
-    const args = process.argv.slice(2)
-    execSync(`node ${process.argv[1]} ${args.join(' ')}`, { stdio: 'inherit' })
-    process.exit(0)
+  if (needsSudo && checkedPath && sudoAvailable) {
+    console.log(chalk.yellow(`  ⚠ Global npm path is not writable: ${checkedPath}`))
+    console.log(chalk.dim('  Re-running update with sudo so you can enter your password once.'))
+    console.log()
+  }
+
+  try {
+    // 📖 Force install from npm registry (ignore local cache).
+    // 📖 If the global install path is not writable, go straight to sudo instead of
+    // 📖 letting npm print a long EACCES stack first.
+    installUpdateCommand(latestVersion, needsSudo && sudoAvailable)
+    console.log()
+    console.log(chalk.green(`  ✅ Update complete! Version ${latestVersion} installed.`))
+    console.log()
+    relaunchCurrentProcess()
+    return
   } catch (err) {
     console.log()
-    // 📖 Check if error is permission-related (EACCES or EPERM)
-    const isPermissionError = err.code === 'EACCES' || err.code === 'EPERM' ||
-                             (err.stderr && (err.stderr.includes('EACCES') || err.stderr.includes('permission') ||
-                                              err.stderr.includes('EACCES'))) ||
-                             (err.message && (err.message.includes('EACCES') || err.message.includes('permission')))
-
-    if (isPermissionError) {
-      console.log(chalk.yellow('  ⚠️ Permission denied. Retrying with sudo...'))
+    if (isPermissionError(err) && !needsSudo && sudoAvailable) {
+      console.log(chalk.yellow('  ⚠ Permission denied during npm global install. Retrying with sudo...'))
       console.log()
       try {
-        execSync(`sudo npm i -g free-coding-models@${latestVersion} --prefer-online`, { stdio: 'inherit' })
+        installUpdateCommand(latestVersion, true)
         console.log()
-        console.log(chalk.green('  ✅ Update complete with sudo! Version ' + latestVersion + ' installed.'))
+        console.log(chalk.green(`  ✅ Update complete with sudo! Version ${latestVersion} installed.`))
         console.log()
-        console.log(chalk.dim('  🔄 Restarting with new version...'))
-        console.log()
-
-        // 📖 Relaunch automatically with the same arguments
-        const args = process.argv.slice(2)
-        execSync(`node ${process.argv[1]} ${args.join(' ')}`, { stdio: 'inherit' })
-        process.exit(0)
-      } catch (sudoErr) {
+        relaunchCurrentProcess()
+        return
+      } catch {
         console.log()
         console.log(chalk.red('  ✖ Update failed even with sudo. Try manually:'))
         console.log(chalk.dim('    sudo npm i -g free-coding-models@' + latestVersion))
         console.log()
       }
+    } else if (isPermissionError(err) && !sudoAvailable && process.platform !== 'win32') {
+      console.log(chalk.red('  ✖ Update failed due to permissions and `sudo` is not available in PATH.'))
+      console.log(chalk.dim(`    Try manually with your system's privilege escalation tool for free-coding-models@${latestVersion}.`))
+      console.log()
     } else {
       console.log(chalk.red('  ✖ Update failed. Try manually: npm i -g free-coding-models@' + latestVersion))
       console.log()

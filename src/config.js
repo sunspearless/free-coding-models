@@ -71,7 +71,7 @@
  *   - apiKeys: API keys per provider (can differ between work/personal setups)
  *   - providers: enabled/disabled state per provider
  *   - favorites: list of pinned favorite models
- *   - settings: extra TUI preferences (tierFilter, sortColumn, sortAsc, pingInterval, hideUnconfiguredModels)
+ *   - settings: extra TUI preferences (tierFilter, sortColumn, sortAsc, pingInterval, hideUnconfiguredModels, proxy)
  *
  * 📖 When a profile is loaded via --profile <name> or Shift+P, the main config's
  *    apiKeys/providers/favorites are replaced with the profile's values. The profile
@@ -96,11 +96,12 @@
  *   → getActiveProfileName(config) — Get the currently active profile name (or null)
  *   → setActiveProfile(config, name) — Set which profile is active (null to clear)
  *   → _emptyProfileSettings() — Default TUI settings for a profile
+ *   → getProxySettings(config) — Return normalized proxy settings from config
  *
  * @exports loadConfig, saveConfig, getApiKey, isProviderEnabled
  * @exports addApiKey, removeApiKey, listApiKeys — multi-key management helpers
  * @exports saveAsProfile, loadProfile, listProfiles, deleteProfile
- * @exports getActiveProfileName, setActiveProfile
+ * @exports getActiveProfileName, setActiveProfile, getProxySettings
  * @exports CONFIG_PATH — path to the JSON config file
  *
  * @see bin/free-coding-models.js — main CLI that uses these functions
@@ -166,6 +167,7 @@ export function loadConfig() {
       if (!parsed.providers) parsed.providers = {}
       if (!parsed.settings || typeof parsed.settings !== 'object') parsed.settings = {}
       if (typeof parsed.settings.hideUnconfiguredModels !== 'boolean') parsed.settings.hideUnconfiguredModels = true
+      parsed.settings.proxy = normalizeProxySettings(parsed.settings.proxy)
       // 📖 Favorites: list of "providerKey/modelId" pinned rows.
       if (!Array.isArray(parsed.favorites)) parsed.favorites = []
       parsed.favorites = parsed.favorites.filter((fav) => typeof fav === 'string' && fav.trim().length > 0)
@@ -177,7 +179,9 @@ export function loadConfig() {
       if (!parsed.profiles || typeof parsed.profiles !== 'object') parsed.profiles = {}
       for (const profile of Object.values(parsed.profiles)) {
         if (!profile || typeof profile !== 'object') continue
-        profile.settings = profile.settings ? { ..._emptyProfileSettings(), ...profile.settings } : _emptyProfileSettings()
+        profile.settings = profile.settings
+          ? { ..._emptyProfileSettings(), ...profile.settings, proxy: normalizeProxySettings(profile.settings.proxy) }
+          : _emptyProfileSettings()
       }
       if (parsed.activeProfile && typeof parsed.activeProfile !== 'string') parsed.activeProfile = null
       return parsed
@@ -400,7 +404,38 @@ export function _emptyProfileSettings() {
     sortAsc: true,        // 📖 true = ascending (fastest first for latency)
     pingInterval: 10000,  // 📖 default ms between pings in the steady "normal" mode
     hideUnconfiguredModels: true, // 📖 true = default to providers that are actually configured
+    proxy: normalizeProxySettings(),
   }
+}
+
+/**
+ * 📖 normalizeProxySettings: keep proxy-related preferences stable across old configs,
+ * 📖 new installs, and profile switches. Proxy is opt-in by default.
+ *
+ * @param {object|undefined|null} proxy
+ * @returns {{ enabled: boolean, syncToOpenCode: boolean, preferredPort: number }}
+ */
+export function normalizeProxySettings(proxy = null) {
+  const preferredPort = Number.isInteger(proxy?.preferredPort) && proxy.preferredPort >= 0 && proxy.preferredPort <= 65535
+    ? proxy.preferredPort
+    : 0
+
+  return {
+    enabled: proxy?.enabled === true,
+    syncToOpenCode: proxy?.syncToOpenCode === true,
+    preferredPort,
+  }
+}
+
+/**
+ * 📖 getProxySettings: return normalized proxy settings from the live config.
+ * 📖 This centralizes the opt-in default so launchers do not guess.
+ *
+ * @param {object} config
+ * @returns {{ enabled: boolean, syncToOpenCode: boolean, preferredPort: number }}
+ */
+export function getProxySettings(config) {
+  return normalizeProxySettings(config?.settings?.proxy)
 }
 
 /**
@@ -447,14 +482,16 @@ export function saveAsProfile(config, name, settings = null) {
 export function loadProfile(config, name) {
   const profile = config?.profiles?.[name]
   if (!profile) return null
+  const nextSettings = profile.settings ? { ..._emptyProfileSettings(), ...profile.settings, proxy: normalizeProxySettings(profile.settings.proxy) } : _emptyProfileSettings()
 
   // 📖 Deep-copy the profile data into the live config (don't share references)
   config.apiKeys = JSON.parse(JSON.stringify(profile.apiKeys || {}))
   config.providers = JSON.parse(JSON.stringify(profile.providers || {}))
   config.favorites = [...(profile.favorites || [])]
+  config.settings = nextSettings
   config.activeProfile = name
 
-  return profile.settings ? { ..._emptyProfileSettings(), ...profile.settings } : _emptyProfileSettings()
+  return nextSettings
 }
 
 /**
@@ -515,6 +552,7 @@ function _emptyConfig() {
     // 📖 Global TUI preferences that should persist even without a named profile.
     settings: {
       hideUnconfiguredModels: true,
+      proxy: normalizeProxySettings(),
     },
     // 📖 Pinned favorites rendered at top of the table ("providerKey/modelId").
     favorites: [],

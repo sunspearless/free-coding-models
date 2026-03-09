@@ -92,10 +92,10 @@ import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { MODELS, sources } from '../sources.js'
 import { getAvg, getVerdict, getUptime, getP95, getJitter, getStabilityScore, sortResults, filterByTier, findBestModel, parseArgs, TIER_ORDER, VERDICT_ORDER, TIER_LETTER_MAP, scoreModelForTask, getTopRecommendations, TASK_TYPES, PRIORITY_TYPES, CONTEXT_BUDGETS, formatCtxWindow, labelFromId, getProxyStatusInfo } from '../src/utils.js'
-import { loadConfig, saveConfig, getApiKey, resolveApiKeys, addApiKey, removeApiKey, isProviderEnabled, saveAsProfile, loadProfile, listProfiles, deleteProfile, getActiveProfileName, setActiveProfile, _emptyProfileSettings } from '../src/config.js'
+import { loadConfig, saveConfig, getApiKey, getProxySettings, resolveApiKeys, addApiKey, removeApiKey, isProviderEnabled, saveAsProfile, loadProfile, listProfiles, deleteProfile, getActiveProfileName, setActiveProfile, _emptyProfileSettings } from '../src/config.js'
 import { buildMergedModels } from '../src/model-merger.js'
 import { ProxyServer } from '../src/proxy-server.js'
-import { loadOpenCodeConfig, saveOpenCodeConfig, syncToOpenCode, restoreOpenCodeBackup } from '../src/opencode-sync.js'
+import { loadOpenCodeConfig, saveOpenCodeConfig, syncToOpenCode, restoreOpenCodeBackup, cleanupOpenCodeProxyConfig } from '../src/opencode-sync.js'
 import { usageForRow as _usageForRow } from '../src/usage-reader.js'
 import { loadRecentLogs } from '../src/log-reader.js'
 import { buildProviderModelTokenKey, loadTokenUsageByProviderModel } from '../src/token-usage-reader.js'
@@ -112,7 +112,7 @@ import { checkForUpdateDetailed, checkForUpdate, runUpdate, promptUpdateNotifica
 import { promptApiKey } from '../src/setup.js'
 import { stripAnsi, maskApiKey, displayWidth, padEndDisplay, tintOverlayLines, keepOverlayTargetVisible, sliceOverlayLines, calculateViewport, sortResultsWithPinnedFavorites, renderProxyStatusLine, adjustScrollOffset } from '../src/render-helpers.js'
 import { renderTable } from '../src/render-table.js'
-import { setOpenCodeModelData, startOpenCode, startOpenCodeDesktop, startProxyAndLaunch, autoStartProxyIfSynced, ensureProxyRunning, buildProxyTopologyFromConfig } from '../src/opencode.js'
+import { setOpenCodeModelData, startOpenCode, startOpenCodeDesktop, startProxyAndLaunch, autoStartProxyIfSynced, ensureProxyRunning, buildProxyTopologyFromConfig, isProxyEnabledForConfig } from '../src/opencode.js'
 import { startOpenClaw } from '../src/openclaw.js'
 import { createOverlayRenderers } from '../src/overlays.js'
 import { createKeyHandler } from '../src/key-handler.js'
@@ -177,6 +177,16 @@ async function main() {
   const config = loadConfig()
   ensureTelemetryConfig(config)
   ensureFavoritesConfig(config)
+
+  if (cliArgs.cleanProxyMode) {
+    const cleaned = cleanupOpenCodeProxyConfig()
+    console.log()
+    console.log(chalk.green('  ✅ OpenCode proxy cleanup complete'))
+    console.log(chalk.dim(`  Config: ${cleaned.path}`))
+    console.log(chalk.dim(`  Removed provider: ${cleaned.removedProvider ? 'yes' : 'no'}  •  Removed default model: ${cleaned.removedModel ? 'yes' : 'no'}`))
+    console.log()
+    process.exit(0)
+  }
 
   // 📖 If --profile <name> was passed, load that profile into the live config
   let startupProfileSettings = null
@@ -385,6 +395,8 @@ async function main() {
     settingsUpdateState: 'idle',  // 📖 'idle'|'checking'|'available'|'up-to-date'|'error'|'installing'
     settingsUpdateLatestVersion: null, // 📖 Latest npm version discovered from manual check
     settingsUpdateError: null,    // 📖 Last update-check error message for maintenance row
+    settingsProxyPortEditMode: false, // 📖 Whether Settings is editing the preferred proxy port field.
+    settingsProxyPortBuffer: '',  // 📖 Inline input buffer for the preferred proxy port (0 = auto).
     config,                       // 📖 Live reference to the config object (updated on save)
     visibleSorted: [],            // 📖 Cached visible+sorted models — shared between render loop and key handlers
     helpVisible: false,           // 📖 Whether the help overlay (K key) is active
@@ -557,6 +569,7 @@ async function main() {
     PROVIDER_METADATA,
     LOCAL_VERSION,
     getApiKey,
+    getProxySettings,
     resolveApiKeys,
     isProviderEnabled,
     listProfiles,
@@ -590,6 +603,7 @@ async function main() {
     MODELS,
     sources,
     getApiKey,
+    getProxySettings,
     resolveApiKeys,
     addApiKey,
     removeApiKey,
@@ -611,6 +625,7 @@ async function main() {
     ENV_VAR_NAMES,
     ensureProxyRunning,
     syncToOpenCode,
+    cleanupOpenCodeProxyConfig,
     restoreOpenCodeBackup,
     checkForUpdateDetailed,
     runUpdate,
@@ -620,6 +635,7 @@ async function main() {
     startProxyAndLaunch,
     startExternalTool,
     buildProxyTopologyFromConfig,
+    isProxyEnabledForConfig,
     getToolModeOrder,
     startRecommendAnalysis: overlays.startRecommendAnalysis,
     stopRecommendAnalysis: overlays.stopRecommendAnalysis,

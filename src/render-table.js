@@ -125,12 +125,13 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     ? chalk.bold.rgb(255, 100, 50)
     : chalk.bold.rgb(0, 200, 255)
   const modeBadge = toolBadgeColor(' [ ') + chalk.yellow.bold('Z') + toolBadgeColor(` Tool : ${toolMeta.label} ]`)
+  const activeHeaderBadge = (text) => chalk.bgRgb(57, 255, 20).black.bold(` ${text} `)
 
   // 📖 Tier filter badge shown when filtering is active (shows exact tier name)
   const TIER_CYCLE_NAMES = [null, 'S+', 'S', 'A+', 'A', 'A-', 'B+', 'B', 'C']
   let tierBadge = ''
   if (tierFilterMode > 0) {
-    tierBadge = chalk.bold.rgb(255, 200, 0)(` [${TIER_CYCLE_NAMES[tierFilterMode]}]`)
+    tierBadge = ` ${activeHeaderBadge(`TIER (${TIER_CYCLE_NAMES[tierFilterMode]})`)}`
   }
 
   const normalizeOriginLabel = (name, key) => {
@@ -140,13 +141,20 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
 
   // 📖 Origin filter badge — shown when filtering by provider is active
   let originBadge = ''
+  let activeOriginLabel = ''
   if (originFilterMode > 0) {
     const originKeys = [null, ...Object.keys(sources)]
     const activeOriginKey = originKeys[originFilterMode]
     const activeOriginName = activeOriginKey ? sources[activeOriginKey]?.name ?? activeOriginKey : null
     if (activeOriginName) {
-      originBadge = chalk.bold.rgb(100, 200, 255)(` [${normalizeOriginLabel(activeOriginName, activeOriginKey)}]`)
+      activeOriginLabel = normalizeOriginLabel(activeOriginName, activeOriginKey)
+      originBadge = ` ${activeHeaderBadge(`PROVIDER (${activeOriginLabel})`)}`
     }
+  }
+
+  let configuredBadge = ''
+  if (hideUnconfiguredModels) {
+    configuredBadge = ` ${activeHeaderBadge('CONFIGURED ONLY')}`
   }
 
   // 📖 Profile badge — shown when a named profile is active (Shift+P to cycle, Shift+S to save)
@@ -201,7 +209,7 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
   const sorted = sortResultsWithPinnedFavorites(visibleResults, sortColumn, sortDirection)
 
   const lines = [
-    `  ${chalk.greenBright.bold(`✅ Free-Coding-Models v${LOCAL_VERSION}`)}${modeBadge}${pingControlBadge}${tierBadge}${originBadge}${profileBadge}${chalk.reset('')}   ` +
+    `  ${chalk.greenBright.bold(`✅ Free-Coding-Models v${LOCAL_VERSION}`)}${modeBadge}${pingControlBadge}${tierBadge}${originBadge}${configuredBadge}${profileBadge}${chalk.reset('')}   ` +
       chalk.greenBright(`✅ ${up}`) + chalk.dim(' up  ') +
       chalk.yellow(`⏳ ${timeout}`) + chalk.dim(' timeout  ') +
       chalk.red(`❌ ${down}`) + chalk.dim(' down  ') +
@@ -587,8 +595,26 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
   // 📖 Footer hints keep only navigation and secondary actions now that the
   // 📖 active tool target is already visible in the header badge.
   const hotkey = (keyLabel, text) => chalk.yellow(keyLabel) + chalk.dim(text)
+  // 📖 Active filter pills use a loud green background so tier/provider/configured-only
+  // 📖 states are obvious even when the user misses the smaller header badges.
+  const activeHotkey = (keyLabel, text) => chalk.bgRgb(57, 255, 20).black(` ${keyLabel}${text} `)
   // 📖 Line 1: core navigation + filtering shortcuts
-  lines.push(chalk.dim(`  ↑↓ Navigate  •  `) + hotkey('F', ' Toggle Favorite') + chalk.dim(`  •  `) + hotkey('T', ' Tier') + chalk.dim(`  •  `) + hotkey('D', ' Provider') + chalk.dim(`  •  `) + hotkey('E', ' Configured Only') + chalk.dim(`  •  `) + hotkey('X', ' Token Logs') + chalk.dim(`  •  `) + hotkey('P', ' Settings') + chalk.dim(`  •  `) + hotkey('K', ' Help'))
+  lines.push(
+    chalk.dim(`  ↑↓ Navigate  •  `) +
+    hotkey('F', ' Toggle Favorite') +
+    chalk.dim(`  •  `) +
+    (tierFilterMode > 0 ? activeHotkey('T', ` Tier (${TIER_CYCLE_NAMES[tierFilterMode]})`) : hotkey('T', ' Tier')) +
+    chalk.dim(`  •  `) +
+    (originFilterMode > 0 ? activeHotkey('D', ` Provider (${activeOriginLabel})`) : hotkey('D', ' Provider')) +
+    chalk.dim(`  •  `) +
+    (hideUnconfiguredModels ? activeHotkey('E', ' Configured Only') : hotkey('E', ' Configured Only')) +
+    chalk.dim(`  •  `) +
+    hotkey('X', ' Token Logs') +
+    chalk.dim(`  •  `) +
+    hotkey('P', ' Settings') +
+    chalk.dim(`  •  `) +
+    hotkey('K', ' Help')
+  )
   // 📖 Line 2: profiles, recommend, feature request, bug report, and extended hints — gives visibility to less-obvious features
   lines.push(chalk.dim(`  `) + hotkey('⇧P', ' Cycle profile') + chalk.dim(`  •  `) + hotkey('⇧S', ' Save profile') + chalk.dim(`  •  `) + hotkey('Q', ' Smart Recommend') + chalk.dim(`  •  `) + hotkey('J', ' Request feature') + chalk.dim(`  •  `) + hotkey('I', ' Report bug'))
   // 📖 Proxy status line — always rendered with explicit state (starting/running/failed/stopped)

@@ -23,6 +23,7 @@
  *   - `startProxyAndLaunch` — Start fcm-proxy then launch OpenCode
  *   - `autoStartProxyIfSynced` — Auto-start proxy if opencode.json has fcm-proxy
  *   - `ensureProxyRunning` — Ensure proxy is running (start or reuse)
+ *   - `isProxyEnabledForConfig` — Check whether proxy mode is opted in
  *
  *   @see src/opencode-sync.js — syncToOpenCode/load/save utilities
  *   @see src/proxy-server.js  — ProxyServer implementation
@@ -40,7 +41,7 @@ import { sources } from '../sources.js'
 import { resolveCloudflareUrl } from './ping.js'
 import { ProxyServer } from './proxy-server.js'
 import { loadOpenCodeConfig, saveOpenCodeConfig, syncToOpenCode } from './opencode-sync.js'
-import { getApiKey, resolveApiKeys } from './config.js'
+import { getApiKey, getProxySettings, resolveApiKeys } from './config.js'
 import { ENV_VAR_NAMES, OPENCODE_MODEL_MAP, isWindows, isMac, isLinux } from './provider-metadata.js'
 import { setActiveProxy } from './render-table.js'
 
@@ -559,9 +560,24 @@ export function buildProxyTopologyFromConfig(fcmConfig) {
   return { accounts, proxyModels }
 }
 
+/**
+ * 📖 Proxy mode is opt-in. Both launch-time proxying and persistent sync rely on
+ * 📖 this single helper so settings/profile changes behave consistently.
+ *
+ * @param {object} fcmConfig
+ * @returns {boolean}
+ */
+export function isProxyEnabledForConfig(fcmConfig) {
+  return getProxySettings(fcmConfig).enabled === true
+}
+
 export async function ensureProxyRunning(fcmConfig, { forceRestart = false } = {}) {
   registerExitHandlers()
   proxyCleanedUp = false
+
+  if (!isProxyEnabledForConfig(fcmConfig)) {
+    throw new Error('Proxy mode is disabled in Settings')
+  }
 
   if (forceRestart && activeProxy) {
     await cleanupProxy()
@@ -587,7 +603,9 @@ export async function ensureProxyRunning(fcmConfig, { forceRestart = false } = {
   }
 
   const proxyToken = `fcm_${randomUUID().replace(/-/g, '')}`
-  const proxy = new ProxyServer({ accounts, proxyApiKey: proxyToken })
+  const proxySettings = getProxySettings(fcmConfig)
+  const preferredPort = Number.isInteger(proxySettings.preferredPort) ? proxySettings.preferredPort : 0
+  const proxy = new ProxyServer({ port: preferredPort, accounts, proxyApiKey: proxyToken })
   const { port } = await proxy.start()
   activeProxy = proxy
   setActiveProxy(activeProxy)
@@ -598,6 +616,9 @@ export async function ensureProxyRunning(fcmConfig, { forceRestart = false } = {
 
 export async function autoStartProxyIfSynced(fcmConfig, state) {
   try {
+    const proxySettings = getProxySettings(fcmConfig)
+    if (!proxySettings.enabled || !proxySettings.syncToOpenCode) return
+
     const ocConfig = loadOpenCodeConfig()
     if (!ocConfig?.provider?.['fcm-proxy']) return
 

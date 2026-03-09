@@ -129,6 +129,30 @@ export function mergeOcConfig(ocConfig, mergedModels, proxyInfo = {}) {
 }
 
 /**
+ * Pure cleanup: remove only the persisted FCM proxy provider and any default
+ * model that still points at it. Other OpenCode providers stay untouched.
+ *
+ * @param {Object} ocConfig - Existing OpenCode config object (will be mutated in-place)
+ * @returns {{ removedProvider: boolean, removedModel: boolean, config: Object }}
+ */
+export function removeFcmProxyFromConfig(ocConfig) {
+  if (!ocConfig || typeof ocConfig !== 'object') {
+    return { removedProvider: false, removedModel: false, config: {} }
+  }
+
+  const hadProvider = Boolean(ocConfig.provider?.[FCM_PROVIDER_ID])
+  if (hadProvider) {
+    delete ocConfig.provider[FCM_PROVIDER_ID]
+    if (Object.keys(ocConfig.provider).length === 0) delete ocConfig.provider
+  }
+
+  const hadModel = typeof ocConfig.model === 'string' && ocConfig.model.startsWith(`${FCM_PROVIDER_ID}/`)
+  if (hadModel) delete ocConfig.model
+
+  return { removedProvider: hadProvider, removedModel: hadModel, config: ocConfig }
+}
+
+/**
  * MERGE the single FCM proxy provider into OpenCode config.
  *
  * CRITICAL: This function ONLY adds/updates the fcm-proxy provider entry.
@@ -154,6 +178,23 @@ export function syncToOpenCode(fcmConfig, _sources, mergedModels, proxyInfo = {}
   return {
     providerKey: FCM_PROVIDER_ID,
     modelCount: Object.keys(merged.provider[FCM_PROVIDER_ID].models).length,
+    path: OC_CONFIG_PATH,
+  }
+}
+
+/**
+ * Remove the persisted FCM proxy provider from OpenCode's config on disk.
+ * This is the user-facing cleanup operation for "proxy uninstall".
+ *
+ * @returns {{ removedProvider: boolean, removedModel: boolean, path: string }}
+ */
+export function cleanupOpenCodeProxyConfig() {
+  const oc = loadOpenCodeConfig()
+  const result = removeFcmProxyFromConfig(oc)
+  saveOpenCodeConfig(result.config)
+  return {
+    removedProvider: result.removedProvider,
+    removedModel: result.removedModel,
     path: OC_CONFIG_PATH,
   }
 }

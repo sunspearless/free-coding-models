@@ -23,6 +23,7 @@ export function createOverlayRenderers(state, deps) {
     PROVIDER_METADATA,
     LOCAL_VERSION,
     getApiKey,
+    getProxySettings,
     resolveApiKeys,
     isProviderEnabled,
     listProfiles,
@@ -49,6 +50,16 @@ export function createOverlayRenderers(state, deps) {
     getPingModel,
   } = deps
 
+  // 📖 Keep log token formatting aligned with the main table so the same totals
+  // 📖 read the same everywhere in the TUI.
+  const formatLogTokens = (totalTokens) => {
+    const safeTotal = Number(totalTokens) || 0
+    if (safeTotal <= 0) return '--'
+    if (safeTotal >= 999_500) return `${(safeTotal / 1_000_000).toFixed(2)}M`
+    if (safeTotal >= 1_000) return `${(safeTotal / 1_000).toFixed(2)}k`
+    return String(Math.floor(safeTotal))
+  }
+
   // ─── Settings screen renderer ─────────────────────────────────────────────
   // 📖 renderSettings: Draw the settings overlay in the alt screen buffer.
   // 📖 Shows all providers with their API key (masked) + enabled state.
@@ -57,6 +68,11 @@ export function createOverlayRenderers(state, deps) {
   function renderSettings() {
     const providerKeys = Object.keys(sources)
     const updateRowIdx = providerKeys.length
+    const proxyEnabledRowIdx = updateRowIdx + 1
+    const proxySyncRowIdx = updateRowIdx + 2
+    const proxyPortRowIdx = updateRowIdx + 3
+    const proxyCleanupRowIdx = updateRowIdx + 4
+    const proxySettings = getProxySettings(state.config)
     const EL = '\x1b[K'
     const lines = []
     const cursorLineByRow = {}
@@ -163,9 +179,37 @@ export function createOverlayRenderers(state, deps) {
       lines.push(chalk.red(`      ${state.settingsUpdateError}`))
     }
 
+    lines.push('')
+    lines.push(`  ${chalk.bold('🔀 Proxy')}`)
+    lines.push(`  ${chalk.dim('  ' + '─'.repeat(112))}`)
+    lines.push('')
+
+    const proxyEnabledBullet = state.settingsCursor === proxyEnabledRowIdx ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
+    const proxyEnabledRow = `${proxyEnabledBullet}${chalk.bold('Proxy mode (opt-in)').padEnd(44)} ${proxySettings.enabled ? chalk.greenBright('Enabled') : chalk.dim('Disabled by default')}`
+    cursorLineByRow[proxyEnabledRowIdx] = lines.length
+    lines.push(state.settingsCursor === proxyEnabledRowIdx ? chalk.bgRgb(20, 45, 60)(proxyEnabledRow) : proxyEnabledRow)
+
+    const proxySyncBullet = state.settingsCursor === proxySyncRowIdx ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
+    const proxySyncRow = `${proxySyncBullet}${chalk.bold('Persist proxy in OpenCode').padEnd(44)} ${proxySettings.syncToOpenCode ? chalk.greenBright('Enabled') : chalk.dim('Disabled')}`
+    cursorLineByRow[proxySyncRowIdx] = lines.length
+    lines.push(state.settingsCursor === proxySyncRowIdx ? chalk.bgRgb(20, 45, 60)(proxySyncRow) : proxySyncRow)
+
+    const proxyPortBullet = state.settingsCursor === proxyPortRowIdx ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
+    const proxyPortValue = state.settingsProxyPortEditMode && state.settingsCursor === proxyPortRowIdx
+      ? chalk.cyanBright(`${state.settingsProxyPortBuffer}▏`)
+      : (proxySettings.preferredPort === 0 ? chalk.dim('auto (OS-assigned)') : chalk.green(String(proxySettings.preferredPort)))
+    const proxyPortRow = `${proxyPortBullet}${chalk.bold('Preferred proxy port').padEnd(44)} ${proxyPortValue}`
+    cursorLineByRow[proxyPortRowIdx] = lines.length
+    lines.push(state.settingsCursor === proxyPortRowIdx ? chalk.bgRgb(20, 45, 60)(proxyPortRow) : proxyPortRow)
+
+    const proxyCleanupBullet = state.settingsCursor === proxyCleanupRowIdx ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
+    const proxyCleanupRow = `${proxyCleanupBullet}${chalk.bold('Clean OpenCode proxy config').padEnd(44)} ${chalk.dim('Enter removes fcm-proxy from opencode.json')}`
+    cursorLineByRow[proxyCleanupRowIdx] = lines.length
+    lines.push(state.settingsCursor === proxyCleanupRowIdx ? chalk.bgRgb(45, 30, 30)(proxyCleanupRow) : proxyCleanupRow)
+
     // 📖 Profiles section — list saved profiles with active indicator + delete support
     const savedProfiles = listProfiles(state.config)
-    const profileStartIdx = updateRowIdx + 1
+    const profileStartIdx = updateRowIdx + 5
     const maxRowIdx = savedProfiles.length > 0 ? profileStartIdx + savedProfiles.length - 1 : updateRowIdx
 
     lines.push('')
@@ -194,8 +238,10 @@ export function createOverlayRenderers(state, deps) {
     lines.push('')
     if (state.settingsEditMode) {
       lines.push(chalk.dim('  Type API key  •  Enter Save  •  Esc Cancel'))
+    } else if (state.settingsProxyPortEditMode) {
+      lines.push(chalk.dim('  Type proxy port (0 = auto)  •  Enter Save  •  Esc Cancel'))
     } else {
-      lines.push(chalk.dim('  ↑↓ Navigate  •  Enter Edit key  •  + Add key  •  - Remove key  •  Space Toggle  •  T Test key  •  S Sync→OpenCode  •  R Restore backup  •  U Updates  •  ⌫ Delete profile  •  Esc Close'))
+      lines.push(chalk.dim('  ↑↓ Navigate  •  Enter Edit/Run  •  + Add key  •  - Remove key  •  Space Toggle  •  T Test key  •  S Sync→OpenCode  •  R Restore backup  •  U Updates  •  ⌫ Delete profile  •  Esc Close'))
     }
     // 📖 Show sync/restore status message if set
     if (state.settingsSyncStatus) {
@@ -288,7 +334,7 @@ export function createOverlayRenderers(state, deps) {
     lines.push(`  ${chalk.yellow('Q')}  Smart Recommend  ${chalk.dim('(🎯 find the best model for your task — questionnaire + live analysis)')}`)
     lines.push(`  ${chalk.rgb(57, 255, 20).bold('J')}  Request Feature  ${chalk.dim('(📝 send anonymous feedback to the project team)')}`)
     lines.push(`  ${chalk.rgb(255, 87, 51).bold('I')}  Report Bug  ${chalk.dim('(🐛 send anonymous bug report to the project team)')}`)
-    lines.push(`  ${chalk.yellow('P')}  Open settings  ${chalk.dim('(manage API keys, provider toggles, manual update)')}`)
+    lines.push(`  ${chalk.yellow('P')}  Open settings  ${chalk.dim('(manage API keys, provider toggles, proxy, manual update)')}`)
     lines.push(`  ${chalk.yellow('Shift+P')}  Cycle config profile  ${chalk.dim('(switch between saved profiles live)')}`)
     lines.push(`  ${chalk.yellow('Shift+S')}  Save current config as a named profile  ${chalk.dim('(inline prompt — type name + Enter)')}`)
     lines.push(`             ${chalk.dim('Profiles store: favorites, sort, tier filter, ping interval, configured-only filter, API keys.')}`)
@@ -327,6 +373,7 @@ export function createOverlayRenderers(state, deps) {
     lines.push(`  ${chalk.cyan('free-coding-models --no-telemetry')}       ${chalk.dim('Disable telemetry for this run')}`)
     lines.push(`  ${chalk.cyan('free-coding-models --recommend')}          ${chalk.dim('Auto-open Smart Recommend on start')}`)
     lines.push(`  ${chalk.cyan('free-coding-models --profile <name>')}     ${chalk.dim('Load a saved config profile')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --clean-proxy')}       ${chalk.dim('Remove persisted fcm-proxy config from OpenCode')}`)
     lines.push(`  ${chalk.dim('Flags can be combined: --openclaw --tier S')}`)
     lines.push('')
     // 📖 Help overlay can be longer than viewport, so keep a dedicated scroll offset.
@@ -346,35 +393,39 @@ export function createOverlayRenderers(state, deps) {
     const lines = []
     lines.push('')
     lines.push(`  ${chalk.bold('📋 Request Log')}  ${chalk.dim('— recent requests • ↑↓ scroll • X or Esc close')}`)
+    lines.push(chalk.dim('  Works only when the multi-account proxy is enabled and requests go through it.'))
+    lines.push(chalk.dim('  Direct provider launches do not currently write into this log.'))
     lines.push('')
 
     // 📖 Load recent log entries — bounded read, newest-first, malformed lines skipped.
     const logRows = loadRecentLogs({ limit: 200 })
+    const totalTokens = logRows.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0)
 
     if (logRows.length === 0) {
       lines.push(chalk.dim('  No log entries found.'))
       lines.push(chalk.dim('  Logs are written to ~/.free-coding-models/request-log.jsonl'))
       lines.push(chalk.dim('  when requests are proxied through the multi-account rotation proxy.'))
+      lines.push(chalk.dim('  Direct provider launches do not currently feed this token log.'))
     } else {
+      lines.push(`  ${chalk.bold('Total Consumed:')} ${chalk.greenBright(formatLogTokens(totalTokens))}`)
+      lines.push('')
       // 📖 Column widths for the log table
       const W_TIME    = 19
-      const W_TYPE    = 18
       const W_PROV    = 14
       const W_MODEL   = 36
       const W_STATUS  = 8
-      const W_TOKENS  = 9
+      const W_TOKENS  = 12
       const W_LAT     = 10
 
       // 📖 Header row
       const hTime   = chalk.dim('Time'.padEnd(W_TIME))
-      const hType   = chalk.dim('Type'.padEnd(W_TYPE))
       const hProv   = chalk.dim('Provider'.padEnd(W_PROV))
       const hModel  = chalk.dim('Model'.padEnd(W_MODEL))
       const hStatus = chalk.dim('Status'.padEnd(W_STATUS))
-      const hTok    = chalk.dim('Used'.padEnd(W_TOKENS))
+      const hTok    = chalk.dim('Tokens Used'.padEnd(W_TOKENS))
       const hLat    = chalk.dim('Latency'.padEnd(W_LAT))
-      lines.push(`  ${hTime}  ${hType}  ${hProv}  ${hModel}  ${hStatus}  ${hTok}  ${hLat}`)
-      lines.push(chalk.dim('  ' + '─'.repeat(W_TIME + W_TYPE + W_PROV + W_MODEL + W_STATUS + W_TOKENS + W_LAT + 12)))
+      lines.push(`  ${hTime}  ${hProv}  ${hModel}  ${hStatus}  ${hTok}  ${hLat}`)
+      lines.push(chalk.dim('  ' + '─'.repeat(W_TIME + W_PROV + W_MODEL + W_STATUS + W_TOKENS + W_LAT + 10)))
 
       for (const row of logRows) {
         // 📖 Format time as HH:MM:SS (strip the date part for compactness)
@@ -399,17 +450,16 @@ export function createOverlayRenderers(state, deps) {
           statusCell = chalk.dim(sc.padEnd(W_STATUS))
         }
 
-        const tokStr = row.tokens > 0 ? String(row.tokens) : '--'
+        const tokStr = formatLogTokens(row.tokens)
         const latStr = row.latency > 0 ? `${row.latency}ms` : '--'
 
         const timeCell  = chalk.dim(timeStr.slice(0, W_TIME).padEnd(W_TIME))
-        const typeCell  = chalk.magenta((row.requestType || '--').slice(0, W_TYPE).padEnd(W_TYPE))
         const provCell  = chalk.cyan(row.provider.slice(0, W_PROV).padEnd(W_PROV))
         const modelCell = chalk.white(row.model.slice(0, W_MODEL).padEnd(W_MODEL))
         const tokCell   = chalk.dim(tokStr.padEnd(W_TOKENS))
         const latCell   = chalk.dim(latStr.padEnd(W_LAT))
 
-        lines.push(`  ${timeCell}  ${typeCell}  ${provCell}  ${modelCell}  ${statusCell}  ${tokCell}  ${latCell}`)
+        lines.push(`  ${timeCell}  ${provCell}  ${modelCell}  ${statusCell}  ${tokCell}  ${latCell}`)
       }
     }
 

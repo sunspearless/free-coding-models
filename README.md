@@ -67,7 +67,7 @@
 
 - **🎯 Coding-focused** — Only LLM models optimized for code generation, not chat or vision
 - **🌐 Multi-provider** — Models from NVIDIA NIM, Groq, Cerebras, SambaNova, OpenRouter, Hugging Face Inference, Replicate, DeepInfra, Fireworks AI, Codestral, Hyperbolic, Scaleway, Google AI, SiliconFlow, Together AI, Cloudflare Workers AI, Perplexity API, Alibaba Cloud (DashScope), ZAI, and iFlow
-- **⚙️ Settings screen** — Press `P` to manage provider API keys, enable/disable providers, test keys live, and manually check/install updates
+- **⚙️ Settings screen** — Press `P` to manage provider API keys, enable/disable providers, configure the proxy, clean OpenCode proxy sync, and manually check/install updates
 - **🔀 Multi-account Proxy (`fcm-proxy`)** — Automatically starts a local reverse proxy that groups all your accounts into a single provider in OpenCode; supports multi-account rotation and auto-detects usage limits to swap between providers.
 - **🚀 Parallel pings** — All models tested simultaneously via native `fetch`
 - **📊 Real-time animation** — Watch latency appear live in alternate screen buffer
@@ -526,6 +526,11 @@ Stability = 0.30 × p95_score
 
 `free-coding-models` includes a built-in reverse proxy that can group all your provider accounts into a single virtual provider.
 
+Important:
+- **Disabled by default** — proxy mode is now opt-in from the Settings screen (`P`)
+- **Direct OpenCode launch remains the default** when proxy mode is off
+- **Token/request logs are only populated by proxied requests** today
+
 ### Why use the proxy?
 - **Unified Provider**: Instead of managing 20+ providers in your coding assistant, just use `fcm-proxy`.
 - **Automatic Rotation**: When one account hits its rate limit (429), the proxy automatically swaps to the next available account for that model.
@@ -533,7 +538,15 @@ Stability = 0.30 × p95_score
 - **Transparent Bridging**: Automatically handles non-standard API paths (like ZAI's `/api/coding/paas/v4/`) and converts them to standard OpenAI-compatible `/v1/` calls.
 
 ### How to use it
-The proxy starts automatically when you select a model in OpenCode mode if you have `fcm-proxy` configured. You can see its status (port and active account count) in the TUI footer.
+1. Open **Settings** with `P`
+2. Enable **Proxy mode (opt-in)**
+3. Optionally enable **Persist proxy in OpenCode** if you explicitly want `fcm-proxy` written to `~/.config/opencode/opencode.json`
+4. Optionally set **Preferred proxy port** (`0` = auto)
+5. Use `S` in Settings to sync the proxy catalog into OpenCode only when you actually want that persistent config
+
+Cleanup:
+- Use the Settings action **Clean OpenCode proxy config**
+- Or run `free-coding-models --clean-proxy`
 
 ---
 

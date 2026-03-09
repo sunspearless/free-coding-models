@@ -443,6 +443,7 @@ export function parseArgs(argv) {
   const ampMode = flags.includes('--amp')
   const piMode = flags.includes('--pi')
   const noTelemetry = flags.includes('--no-telemetry')
+  const cleanProxyMode = flags.includes('--clean-proxy') || flags.includes('--proxy-clean')
 
   let tierFilter = tierValueIdx !== -1 ? args[tierValueIdx].toUpperCase() : null
 
@@ -469,6 +470,7 @@ export function parseArgs(argv) {
     ampMode,
     piMode,
     noTelemetry,
+    cleanProxyMode,
     tierFilter,
     profileName,
     recommendMode
