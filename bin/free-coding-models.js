@@ -573,6 +573,9 @@ async function main() {
     return state.results
   }
 
+  // 📖 Apply initial filters so configured-only mode works on first render
+  applyTierFilter()
+
   // ─── Overlay renderers + key handler ─────────────────────────────────────
   const stopUi = ({ resetRawMode = false } = {}) => {
     if (ticker) clearInterval(ticker)
