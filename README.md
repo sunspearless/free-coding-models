@@ -108,6 +108,20 @@ Before using `free-coding-models`, make sure you have:
    - **Cerebras** — [cloud.cerebras.ai](https://cloud.cerebras.ai) → API Keys → Create
    - **SambaNova** — [sambanova.ai/developers](https://sambanova.ai/developers) → Developers portal → API key (dev tier generous)
    - **OpenRouter** — [openrouter.ai/keys](https://openrouter.ai/keys) → Create key (50 req/day, 20/min on `:free`)
+
+### OpenRouter — Free requests on free models (:free)
+
+───────────────────────────────────────────────────
+No credits (or < $10) → 50 requests / day (20 req/min)
+≥ $10 in credits → 1000 requests / day (20 req/min)
+───────────────────────────────────────────────────
+
+Key things to know:
+• Free models (:free) never consume your credits. Your $10 stays untouched if you only use :free models.
+• Failed requests still count toward your daily quota.
+• Quota resets every day at midnight UTC.
+• Free-tier popular models may be additionally rate-limited by the provider itself during peak hours.
+───────────────────────────────────────────────────
    - **Hugging Face Inference** — [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → Access Tokens (free monthly credits)
    - **Replicate** — [replicate.com/account/api-tokens](https://replicate.com/account/api-tokens) → Create token (dev quota)
    - **DeepInfra** — [deepinfra.com/login](https://deepinfra.com/login) → Login → API key (free dev tier)

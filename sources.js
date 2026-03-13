@@ -146,7 +146,14 @@ export const sambanova = [
 ]
 
 // 📖 OpenRouter source - https://openrouter.ai
-// 📖 Free :free models with shared quota — 50 free req/day
+// 📖 Free :free models with shared quota — 50 free req/day (20 req/min)
+// 📖 No credits (or < $10) → 50 requests / day (20 req/min)
+// 📖 ≥ $10 in credits → 1000 requests / day (20 req/min)
+// 📖 Key things to know:
+// 📖 • Free models (:free) never consume your credits. Your $10 stays untouched if you only use :free models.
+// 📖 • Failed requests still count toward your daily quota.
+// 📖 • Quota resets every day at midnight UTC.
+// 📖 • Free-tier popular models may be additionally rate-limited by the provider itself during peak hours.
 // 📖 API keys at https://openrouter.ai/keys
 export const openrouter = [
   ['qwen/qwen3-coder:free',                    'Qwen3 Coder 480B',   'S+', '70.6%', '262k'],
