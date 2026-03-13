@@ -29,6 +29,8 @@
   💬 <a href="https://discord.gg/5MbTnDC3Md">Let's talk about the project on Discord</a>
 </p>
 
+By Vanessa Depraute
+
 <p align="center">
 
 ```
