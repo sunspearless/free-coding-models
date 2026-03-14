@@ -80,7 +80,7 @@ By Vanessa Depraute
 - **📐 Stability score** — Composite 0–100 score measuring consistency (p95, jitter, spikes, uptime)
 - **📊 Usage tracking** — Monitor remaining quota for each exact provider/model pair when the provider exposes it; otherwise the TUI shows a green dot instead of a misleading percentage.
 - **📜 Request Log Overlay** — Press `X` to inspect recent proxied requests and token usage for exact provider/model pairs.
-- **📋 Changelog Overlay** — Press `N` to view what changed in each version with full scroll support
+- **📋 Changelog Overlay** — Press `N` to browse all versions in an index, then `Enter` to view details for any version with full scroll support
 - **🛠 MODEL_NOT_FOUND Rotation** — If a specific provider returns a 404 for a model, the TUI intelligently rotates through other available providers for the same model.
 - **🔄 Auto-retry** — Timeout models keep getting retried, nothing is ever "given up on"
 - **🎮 Interactive selection** — Navigate with arrow keys directly in the table, press Enter to act
@@ -932,7 +932,7 @@ This script:
 - **Shift+P** — Cycle through saved profiles (switches live TUI settings)
 - **Shift+S** — Save current TUI settings as a named profile (inline prompt)
 - **Q** — Open Smart Recommend overlay (find the best model for your task)
-- **N** — Open Changelog overlay (view changes in each version)
+- **N** — Open Changelog overlay (browse index of all versions, `Enter` to view details, `B` to go back)
 - **W** — Cycle ping mode (`FAST` 2s → `NORMAL` 10s → `SLOW` 30s → `FORCED` 4s)
 - **J / I** — Request feature / Report bug
 - **K / Esc** — Show help overlay / Close overlay
