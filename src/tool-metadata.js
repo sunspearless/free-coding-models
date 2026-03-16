@@ -29,13 +29,13 @@ export const TOOL_METADATA = {
   crush: { label: 'Crush', emoji: '💘', flag: '--crush' },
   goose: { label: 'Goose', emoji: '🪿', flag: '--goose' },
   pi: { label: 'Pi', emoji: 'π', flag: '--pi' },
-  // aider: { label: 'Aider', emoji: '🛠', flag: '--aider' },
-  // 'claude-code': { label: 'Claude Code', emoji: '🧠', flag: '--claude-code' },
-  // codex: { label: 'Codex CLI', emoji: '⌘', flag: '--codex' },
-  // gemini: { label: 'Gemini CLI', emoji: '✦', flag: '--gemini' },
-  // qwen: { label: 'Qwen Code', emoji: '🌊', flag: '--qwen' },
-  // openhands: { label: 'OpenHands', emoji: '🤲', flag: '--openhands' },
-  // amp: { label: 'Amp', emoji: '⚡', flag: '--amp' },
+  aider: { label: 'Aider', emoji: '🛠', flag: '--aider' },
+  'claude-code': { label: 'Claude Code', emoji: '🧠', flag: '--claude-code' },
+  codex: { label: 'Codex CLI', emoji: '⌘', flag: '--codex' },
+  gemini: { label: 'Gemini CLI', emoji: '✦', flag: '--gemini' },
+  qwen: { label: 'Qwen Code', emoji: '🌊', flag: '--qwen' },
+  openhands: { label: 'OpenHands', emoji: '🤲', flag: '--openhands' },
+  amp: { label: 'Amp', emoji: '⚡', flag: '--amp' },
 }
 
 export const TOOL_MODE_ORDER = [
@@ -45,13 +45,13 @@ export const TOOL_MODE_ORDER = [
   'crush',
   'goose',
   'pi',
-  // 'aider',
-  // 'claude-code',
-  // 'codex',
-  // 'gemini',
-  // 'qwen',
-  // 'openhands',
-  // 'amp',
+  'aider',
+  'claude-code',
+  'codex',
+  'gemini',
+  'qwen',
+  'openhands',
+  'amp',
 ]
 
 export function getToolMeta(mode) {

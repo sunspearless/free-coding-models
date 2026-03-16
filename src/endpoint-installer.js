@@ -13,11 +13,21 @@
  *   - it merges into existing config files instead of replacing them
  *   - it records successful installs in `~/.free-coding-models.json` so catalogs can be refreshed automatically later
  *
+ *   📖 Connection modes:
+ *   - `direct` — connect the tool straight to the provider API endpoint (no proxy)
+ *   - `proxy` — route through the local FCM proxy (key rotation + usage tracking)
+ *
  *   📖 Tool-specific notes:
  *   - OpenCode CLI and OpenCode Desktop share the same `opencode.json`
  *   - Crush gets a managed provider block in `crush.json`
  *   - Goose gets a declarative custom provider JSON + a matching secret in `secrets.yaml`
  *   - OpenClaw gets a managed `models.providers` entry plus matching allowlist rows
+ *   - Pi gets models.json + settings.json under ~/.pi/agent/
+ *   - Aider gets ~/.aider.conf.yml with OpenAI-compatible config
+ *   - Amp gets ~/.config/amp/settings.json
+ *   - Gemini gets ~/.gemini/settings.json
+ *   - Qwen gets ~/.qwen/settings.json with modelProviders
+ *   - Claude Code, Codex, OpenHands get a sourceable env file (~/.fcm-{tool}-env)
  *
  * @functions
  *   → `getConfiguredInstallableProviders` — list configured providers that support direct endpoint installs
@@ -44,7 +54,14 @@ import { ENV_VAR_NAMES, PROVIDER_METADATA } from './provider-metadata.js'
 import { getToolMeta } from './tool-metadata.js'
 
 const DIRECT_INSTALL_UNSUPPORTED_PROVIDERS = new Set(['replicate', 'zai'])
-const INSTALL_TARGET_MODES = ['opencode', 'opencode-desktop', 'openclaw', 'crush', 'goose']
+// 📖 All supported install targets — matches TOOL_MODE_ORDER in tool-metadata.js
+const INSTALL_TARGET_MODES = ['opencode', 'opencode-desktop', 'openclaw', 'crush', 'goose', 'pi', 'aider', 'claude-code', 'codex', 'gemini', 'qwen', 'openhands', 'amp']
+
+// 📖 Connection modes: direct (pure provider) vs FCM proxy (rotates keys)
+export const CONNECTION_MODES = [
+  { key: 'direct', label: 'Direct Provider', hint: 'Connect the tool straight to the provider API — no proxy involved.' },
+  { key: 'proxy', label: 'FCM Proxy', hint: 'Route through the local FCM proxy with key rotation and usage tracking.' },
+]
 
 function getDefaultPaths() {
   const home = homedir()
@@ -54,6 +71,12 @@ function getDefaultPaths() {
     crushConfigPath: join(home, '.config', 'crush', 'crush.json'),
     gooseProvidersDir: join(home, '.config', 'goose', 'custom_providers'),
     gooseSecretsPath: join(home, '.config', 'goose', 'secrets.yaml'),
+    piModelsPath: join(home, '.pi', 'agent', 'models.json'),
+    piSettingsPath: join(home, '.pi', 'agent', 'settings.json'),
+    aiderConfigPath: join(home, '.aider.conf.yml'),
+    ampConfigPath: join(home, '.config', 'amp', 'settings.json'),
+    geminiConfigPath: join(home, '.gemini', 'settings.json'),
+    qwenConfigPath: join(home, '.qwen', 'settings.json'),
   }
 }
 
@@ -374,8 +397,131 @@ function installIntoOpenClaw(providerKey, models, apiKey, paths) {
   return { path: filePath, backupPath, providerId, modelCount: models.length }
 }
 
+// 📖 installIntoPi writes models.json + settings.json under ~/.pi/agent/
+function installIntoPi(providerKey, models, apiKey, paths) {
+  const providerId = getManagedProviderId(providerKey)
+  const baseUrl = resolveProviderBaseUrl(providerKey)
+
+  // 📖 Write models.json with provider config
+  const modelsConfig = readJson(paths.piModelsPath, { providers: {} })
+  if (!modelsConfig.providers || typeof modelsConfig.providers !== 'object') modelsConfig.providers = {}
+  modelsConfig.providers[providerId] = {
+    baseUrl,
+    api: 'openai-completions',
+    apiKey,
+    models: models.map((model) => ({ id: model.modelId, name: model.label })),
+  }
+  const modelsBackupPath = writeJson(paths.piModelsPath, modelsConfig)
+
+  // 📖 Write settings.json to set default provider
+  const settingsConfig = readJson(paths.piSettingsPath, {})
+  settingsConfig.defaultProvider = providerId
+  settingsConfig.defaultModel = models[0]?.modelId ?? ''
+  writeJson(paths.piSettingsPath, settingsConfig, { backup: true })
+
+  return { path: paths.piModelsPath, backupPath: modelsBackupPath, providerId, modelCount: models.length }
+}
+
+// 📖 installIntoAider writes ~/.aider.conf.yml with OpenAI-compatible config
+function installIntoAider(providerKey, models, apiKey, paths) {
+  const providerId = getManagedProviderId(providerKey)
+  const baseUrl = resolveProviderBaseUrl(providerKey)
+  const backupPath = backupIfExists(paths.aiderConfigPath)
+  // 📖 Aider YAML config — one model at a time, uses first selected model
+  const primaryModel = models[0]
+  const lines = [
+    '# 📖 Managed by free-coding-models',
+    `openai-api-base: ${baseUrl}`,
+    `openai-api-key: ${apiKey}`,
+    `model: openai/${primaryModel.modelId}`,
+    '',
+  ]
+  ensureDirFor(paths.aiderConfigPath)
+  writeFileSync(paths.aiderConfigPath, lines.join('\n'))
+  return { path: paths.aiderConfigPath, backupPath, providerId, modelCount: models.length }
+}
+
+// 📖 installIntoAmp writes ~/.config/amp/settings.json with model+URL
+function installIntoAmp(providerKey, models, apiKey, paths) {
+  const providerId = getManagedProviderId(providerKey)
+  const baseUrl = resolveProviderBaseUrl(providerKey)
+  const config = readJson(paths.ampConfigPath, {})
+  config['amp.url'] = baseUrl
+  config['amp.model'] = models[0]?.modelId ?? ''
+  const backupPath = writeJson(paths.ampConfigPath, config)
+  return { path: paths.ampConfigPath, backupPath, providerId, modelCount: models.length }
+}
+
+// 📖 installIntoGemini writes ~/.gemini/settings.json with model ID
+function installIntoGemini(providerKey, models, apiKey, paths) {
+  const providerId = getManagedProviderId(providerKey)
+  const config = readJson(paths.geminiConfigPath, {})
+  config.model = models[0]?.modelId ?? ''
+  const backupPath = writeJson(paths.geminiConfigPath, config)
+  return { path: paths.geminiConfigPath, backupPath, providerId, modelCount: models.length }
+}
+
+// 📖 installIntoQwen writes ~/.qwen/settings.json with modelProviders config
+function installIntoQwen(providerKey, models, apiKey, paths) {
+  const providerId = getManagedProviderId(providerKey)
+  const baseUrl = resolveProviderBaseUrl(providerKey)
+  const config = readJson(paths.qwenConfigPath, {})
+  if (!config.modelProviders || typeof config.modelProviders !== 'object') config.modelProviders = {}
+  if (!Array.isArray(config.modelProviders.openai)) config.modelProviders.openai = []
+
+  // 📖 Remove existing FCM-managed entries, then prepend all selected models
+  const filtered = config.modelProviders.openai.filter(
+    (entry) => !models.some((m) => m.modelId === entry?.id)
+  )
+  const newEntries = models.map((model) => ({
+    id: model.modelId,
+    name: model.label,
+    envKey: ENV_VAR_NAMES[providerKey] || 'OPENAI_API_KEY',
+    baseUrl,
+  }))
+  config.modelProviders.openai = [...newEntries, ...filtered]
+  config.model = models[0]?.modelId ?? ''
+  const backupPath = writeJson(paths.qwenConfigPath, config)
+  return { path: paths.qwenConfigPath, backupPath, providerId, modelCount: models.length }
+}
+
+// 📖 installIntoEnvBasedTool handles tools that rely on env vars only (claude-code, codex, openhands).
+// 📖 We write a small .env-style helper file so users can source it before launching.
+function installIntoEnvBasedTool(providerKey, models, apiKey, toolMode, paths) {
+  const providerId = getManagedProviderId(providerKey)
+  const baseUrl = resolveProviderBaseUrl(providerKey)
+  const home = homedir()
+  const envFileName = `.fcm-${toolMode}-env`
+  const envFilePath = join(home, envFileName)
+
+  const primaryModel = models[0]
+  const envLines = [
+    '# 📖 Managed by free-coding-models — source this file before launching the tool',
+    `# 📖 Provider: ${getProviderLabel(providerKey)} (${models.length} models)`,
+    `export OPENAI_API_KEY="${apiKey}"`,
+    `export OPENAI_BASE_URL="${baseUrl}"`,
+    `export OPENAI_MODEL="${primaryModel.modelId}"`,
+    `export LLM_API_KEY="${apiKey}"`,
+    `export LLM_BASE_URL="${baseUrl}"`,
+    `export LLM_MODEL="openai/${primaryModel.modelId}"`,
+  ]
+
+  // 📖 Tool-specific extra env vars
+  if (toolMode === 'claude-code') {
+    envLines.push(`export ANTHROPIC_AUTH_TOKEN="${apiKey}"`)
+    envLines.push(`export ANTHROPIC_BASE_URL="${baseUrl}"`)
+    envLines.push(`export ANTHROPIC_MODEL="${primaryModel.modelId}"`)
+  }
+
+  ensureDirFor(envFilePath)
+  const backupPath = backupIfExists(envFilePath)
+  writeFileSync(envFilePath, envLines.join('\n') + '\n')
+  return { path: envFilePath, backupPath, providerId, modelCount: models.length }
+}
+
 export function installProviderEndpoints(config, providerKey, toolMode, options = {}) {
   const canonicalToolMode = canonicalizeToolMode(toolMode)
+  const connectionMode = options.connectionMode || 'direct'
   const support = getDirectInstallSupport(providerKey)
   if (!support.supported) {
     throw new Error(support.reason || 'Direct install is not supported for this provider')
@@ -389,6 +535,7 @@ export function installProviderEndpoints(config, providerKey, toolMode, options 
   }
 
   const paths = { ...getDefaultPaths(), ...(options.paths || {}) }
+  // 📖 Dispatch to the right installer based on canonical tool mode
   let installResult
   if (canonicalToolMode === 'opencode') {
     installResult = installIntoOpenCode(providerKey, models, apiKey, paths)
@@ -398,6 +545,18 @@ export function installProviderEndpoints(config, providerKey, toolMode, options 
     installResult = installIntoCrush(providerKey, models, apiKey, paths)
   } else if (canonicalToolMode === 'goose') {
     installResult = installIntoGoose(providerKey, models, apiKey, paths)
+  } else if (canonicalToolMode === 'pi') {
+    installResult = installIntoPi(providerKey, models, apiKey, paths)
+  } else if (canonicalToolMode === 'aider') {
+    installResult = installIntoAider(providerKey, models, apiKey, paths)
+  } else if (canonicalToolMode === 'amp') {
+    installResult = installIntoAmp(providerKey, models, apiKey, paths)
+  } else if (canonicalToolMode === 'gemini') {
+    installResult = installIntoGemini(providerKey, models, apiKey, paths)
+  } else if (canonicalToolMode === 'qwen') {
+    installResult = installIntoQwen(providerKey, models, apiKey, paths)
+  } else if (canonicalToolMode === 'claude-code' || canonicalToolMode === 'codex' || canonicalToolMode === 'openhands') {
+    installResult = installIntoEnvBasedTool(providerKey, models, apiKey, canonicalToolMode, paths)
   } else {
     throw new Error(`Unsupported install target: ${toolMode}`)
   }
@@ -414,6 +573,7 @@ export function installProviderEndpoints(config, providerKey, toolMode, options 
     providerKey,
     providerLabel: getProviderLabel(providerKey),
     scope,
+    connectionMode,
     autoRefreshEnabled: true,
     models,
   }

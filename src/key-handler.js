@@ -169,6 +169,7 @@ export function createKeyHandler(ctx) {
     getInstallTargetModes,
     getProviderCatalogModels,
     installProviderEndpoints,
+    CONNECTION_MODES,
     syncFavoriteFlags,
     toggleFavoriteModel,
     sortResultsWithPinnedFavorites,
@@ -334,6 +335,7 @@ export function createKeyHandler(ctx) {
     state.installEndpointsScrollOffset = 0
     state.installEndpointsProviderKey = null
     state.installEndpointsToolMode = null
+    state.installEndpointsConnectionMode = null
     state.installEndpointsScope = null
     state.installEndpointsSelectedModelIds = new Set()
     state.installEndpointsErrorMsg = null
@@ -349,6 +351,7 @@ export function createKeyHandler(ctx) {
       {
         scope: state.installEndpointsScope,
         modelIds: selectedModelIds,
+        connectionMode: state.installEndpointsConnectionMode || 'direct',
       }
     )
 
@@ -414,12 +417,13 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // 📖 Install Endpoints overlay: provider → tool → scope → optional model subset.
+    // 📖 Install Endpoints overlay: provider → tool → connection → scope → optional model subset.
     if (state.installEndpointsOpen) {
       if (key.ctrl && key.name === 'c') { exit(0); return }
 
       const providerChoices = getConfiguredInstallableProviders(state.config)
       const toolChoices = getInstallTargetModes()
+      const connectionChoices = CONNECTION_MODES || []
       const modelChoices = state.installEndpointsProviderKey
         ? getProviderCatalogModels(state.installEndpointsProviderKey)
         : []
@@ -428,6 +432,7 @@ export function createKeyHandler(ctx) {
       const maxIndexByPhase = () => {
         if (state.installEndpointsPhase === 'providers') return Math.max(0, providerChoices.length - 1)
         if (state.installEndpointsPhase === 'tools') return Math.max(0, toolChoices.length - 1)
+        if (state.installEndpointsPhase === 'connection') return Math.max(0, connectionChoices.length - 1)
         if (state.installEndpointsPhase === 'scope') return 1
         if (state.installEndpointsPhase === 'models') return Math.max(0, modelChoices.length - 1)
         return 0
@@ -470,9 +475,15 @@ export function createKeyHandler(ctx) {
           state.installEndpointsScrollOffset = 0
           return
         }
-        if (state.installEndpointsPhase === 'scope') {
+        if (state.installEndpointsPhase === 'connection') {
           state.installEndpointsPhase = 'tools'
           state.installEndpointsCursor = 0
+          state.installEndpointsScrollOffset = 0
+          return
+        }
+        if (state.installEndpointsPhase === 'scope') {
+          state.installEndpointsPhase = 'connection'
+          state.installEndpointsCursor = state.installEndpointsConnectionMode === 'proxy' ? 1 : 0
           state.installEndpointsScrollOffset = 0
           return
         }
@@ -508,6 +519,20 @@ export function createKeyHandler(ctx) {
           const selectedToolMode = toolChoices[state.installEndpointsCursor]
           if (!selectedToolMode) return
           state.installEndpointsToolMode = selectedToolMode
+          state.installEndpointsPhase = 'connection'
+          state.installEndpointsCursor = 0
+          state.installEndpointsScrollOffset = 0
+          state.installEndpointsErrorMsg = null
+        }
+        return
+      }
+
+      // 📖 Connection mode phase: Direct Provider vs FCM Proxy
+      if (state.installEndpointsPhase === 'connection') {
+        if (key.name === 'return') {
+          const selected = connectionChoices[state.installEndpointsCursor]
+          if (!selected) return
+          state.installEndpointsConnectionMode = selected.key
           state.installEndpointsPhase = 'scope'
           state.installEndpointsCursor = 0
           state.installEndpointsScrollOffset = 0
@@ -1395,6 +1420,7 @@ export function createKeyHandler(ctx) {
       state.installEndpointsScrollOffset = 0
       state.installEndpointsProviderKey = null
       state.installEndpointsToolMode = null
+      state.installEndpointsConnectionMode = null
       state.installEndpointsScope = null
       state.installEndpointsSelectedModelIds = new Set()
       state.installEndpointsErrorMsg = null

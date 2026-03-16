@@ -87,7 +87,7 @@ By Vanessa Depraute
 - **💻 OpenCode integration** — Auto-detects NIM setup, sets model as default, launches OpenCode
 - **🦞 OpenClaw integration** — Sets selected model as default provider in `~/.openclaw/openclaw.json`
 - **🧰 Public tool launchers** — `Enter` auto-configures and launches 10+ tools: `OpenCode CLI`, `OpenCode Desktop`, `OpenClaw`, `Crush`, `Goose`, `Aider`, `Claude Code`, `Codex`, `Gemini`, `Qwen`, `OpenHands`, `Amp`, and `Pi`. All tools auto-select the chosen model on launch.
-- **🔌 Install Endpoints flow** — Press `Y` to install one configured provider directly into `OpenCode CLI`, `OpenCode Desktop`, `OpenClaw`, `Crush`, `Goose`, `Aider`, or `Gemini`, either with the full provider catalog or a curated subset of models
+- **🔌 Install Endpoints flow** — Press `Y` to install one configured provider into any of the 13 supported tools, with a choice between **Direct Provider** (pure API) or **FCM Proxy** (key rotation + usage tracking), then pick all models or a curated subset
 - **📝 Feature Request (J key)** — Send anonymous feedback directly to the project team
 - **🐛 Bug Report (I key)** — Send anonymous bug reports directly to the project team
  - **🎨 Clean output** — Zero scrollback pollution, interface stays open until Ctrl+C
@@ -237,8 +237,8 @@ free-coding-models --tier S --json
 
 Running `free-coding-models` with no launcher flag starts in **OpenCode CLI** mode.
 
-- Press **`Z`** in the TUI to cycle the public launch targets: `OpenCode CLI` → `OpenCode Desktop` → `OpenClaw` → `Crush` → `Goose`
-- Or start directly in the target mode with a CLI flag such as `--opencode-desktop`, `--openclaw`, `--crush`, or `--goose`
+- Press **`Z`** in the TUI to cycle the public launch targets: `OpenCode CLI` → `OpenCode Desktop` → `OpenClaw` → `Crush` → `Goose` → `Pi` → `Aider` → `Claude Code` → `Codex` → `Gemini` → `Qwen` → `OpenHands` → `Amp`
+- Or start directly in the target mode with a CLI flag such as `--opencode-desktop`, `--openclaw`, `--crush`, `--goose`, `--pi`, `--aider`, `--claude-code`, `--codex`, `--gemini`, `--qwen`, `--openhands`, or `--amp`
 - The active target is always visible in the header badge before you press `Enter`
 
 **How it works:**
@@ -615,7 +615,9 @@ You can use `free-coding-models` with 12+ AI coding tools. When you select a mod
 | **Amp** | `--amp` | ~/.config/amp/settings.json |
 | **Pi** | `--pi` | ~/.pi/agent/settings.json |
 
-Press **Z** to cycle through different tool modes in the TUI, or use flags to start in your preferred mode.
+Press **Z** to cycle through all 13 tool modes in the TUI, or use flags to start in your preferred mode.
+
+All tools are also available as install targets in the **Install Endpoints** flow (`Y` key) — install an entire provider catalog into any tool with one flow, choosing between Direct Provider or FCM Proxy connection.
 
 ---
 
@@ -924,11 +926,11 @@ This script:
 - **T** — Cycle tier filter (All → S+ → S → A+ → A → A- → B+ → B → C → All)
 - **D** — Cycle provider filter (All → NIM → Groq → ...)
 - **E** — Toggle configured-only mode (on by default, persisted across sessions and profiles)
-- **Z** — Cycle target tool (OpenCode CLI → OpenCode Desktop → OpenClaw → Crush → Goose)
+- **Z** — Cycle target tool (OpenCode CLI → Desktop → OpenClaw → Crush → Goose → Pi → Aider → Claude Code → Codex → Gemini → Qwen → OpenHands → Amp)
 - **X** — Toggle request logs (recent proxied request/token usage logs, up to 500 entries)
 - **A (in logs)** — Toggle between showing 500 entries or ALL logs
 - **P** — Open Settings (manage API keys, toggles, updates, profiles)
-- **Y** — Open Install Endpoints (`provider → tool → all models` or `selected models only`, no proxy)
+- **Y** — Open Install Endpoints (`provider → tool → connection mode → scope → models`, Direct or FCM Proxy)
 - **Shift+P** — Cycle through saved profiles (switches live TUI settings)
 - **Shift+S** — Save current TUI settings as a named profile (inline prompt)
 - **Q** — Open Smart Recommend overlay (find the best model for your task)
@@ -942,18 +944,25 @@ Pressing **K** now shows a full in-app reference: main hotkeys, settings hotkeys
 
 ### 🔌 Install Endpoints (`Y`)
 
-`Y` opens a dedicated install flow for configured providers. The flow is:
+`Y` opens a dedicated install flow for configured providers. The 5-step flow is:
 
-1. Pick one provider that already has an API key in Settings
-2. Pick the target tool: `OpenCode CLI`, `OpenCode Desktop`, `OpenClaw`, `Crush`, or `Goose`
-3. Choose either `Install all models` or `Install selected models only`
+1. **Provider** — Pick one provider that already has an API key in Settings
+2. **Tool** — Pick the target tool from all 13 supported tools:
+   - Config-based: `OpenCode CLI`, `OpenCode Desktop`, `OpenClaw`, `Crush`, `Goose`, `Pi`, `Aider`, `Amp`, `Gemini`, `Qwen`
+   - Env-file based: `Claude Code`, `Codex CLI`, `OpenHands` (writes `~/.fcm-{tool}-env` — source it before launching)
+3. **Connection Mode** — Choose how the tool connects to the provider:
+   - **⚡ Direct Provider** — pure API connection, no proxy involved
+   - **🔄 FCM Proxy** — route through the local FCM proxy with key rotation and usage tracking
+4. **Scope** — Choose `Install all models` or `Install selected models only`
+5. **Models** (if scope = selected) — Multi-select individual models from the provider catalog
 
 Important behavior:
 
-- Installs are written directly into the target tool config as FCM-managed entries, without going through `fcm-proxy`
+- Installs are written into the target tool config as FCM-managed entries (namespaced under `fcm-*`)
 - `Install all models` is the recommended path because FCM can refresh that catalog automatically on later launches when the provider model list changes
 - `Install selected models only` is useful when you want a smaller curated picker inside the target tool
 - `OpenCode CLI` and `OpenCode Desktop` share the same `opencode.json`, so the managed provider appears in both
+- For env-based tools (Claude Code, Codex, OpenHands), FCM writes a sourceable file at `~/.fcm-{tool}-env` — run `source ~/.fcm-claude-code-env` before launching
 
  **Keyboard shortcuts (Settings screen — `P` key):**
  - **↑↓** — Navigate providers, maintenance row, and profile rows

@@ -118,9 +118,9 @@ import { setOpenCodeModelData, startOpenCode, startOpenCodeDesktop, startProxyAn
 import { startOpenClaw } from '../src/openclaw.js'
 import { createOverlayRenderers } from '../src/overlays.js'
 import { createKeyHandler } from '../src/key-handler.js'
-import { getToolModeOrder } from '../src/tool-metadata.js'
+import { getToolModeOrder, getToolMeta } from '../src/tool-metadata.js'
 import { startExternalTool } from '../src/tool-launchers.js'
-import { getConfiguredInstallableProviders, installProviderEndpoints, refreshInstalledEndpoints, getInstallTargetModes, getProviderCatalogModels } from '../src/endpoint-installer.js'
+import { getConfiguredInstallableProviders, installProviderEndpoints, refreshInstalledEndpoints, getInstallTargetModes, getProviderCatalogModels, CONNECTION_MODES } from '../src/endpoint-installer.js'
 import { loadCache, saveCache, clearCache, getCacheAge } from '../src/cache.js'
 import { checkConfigSecurity } from '../src/security.js'
 
@@ -403,11 +403,12 @@ async function main() {
     helpScrollOffset: 0,          // 📖 Vertical scroll offset for Help overlay viewport
     // 📖 Install Endpoints overlay state (Y key opens it)
     installEndpointsOpen: false,  // 📖 Whether the install-endpoints overlay is active
-    installEndpointsPhase: 'providers', // 📖 providers | tools | scope | models | result
+    installEndpointsPhase: 'providers', // 📖 providers | tools | connection | scope | models | result
     installEndpointsCursor: 0,    // 📖 Selected row within the current install phase
     installEndpointsScrollOffset: 0, // 📖 Vertical scroll offset for the install overlay viewport
     installEndpointsProviderKey: null, // 📖 Selected provider for endpoint installation
     installEndpointsToolMode: null, // 📖 Selected target tool mode
+    installEndpointsConnectionMode: null, // 📖 'direct' | 'proxy' — how the tool connects to the provider
     installEndpointsScope: null,  // 📖 all | selected
     installEndpointsSelectedModelIds: new Set(), // 📖 Multi-select buffer for the selected-models phase
     installEndpointsErrorMsg: null, // 📖 Temporary validation/error message inside the install flow
@@ -687,6 +688,8 @@ async function main() {
     getConfiguredInstallableProviders,
     getInstallTargetModes,
     getProviderCatalogModels,
+    CONNECTION_MODES,
+    getToolMeta,
   })
 
   onKeyPress = createKeyHandler({
@@ -711,6 +714,7 @@ async function main() {
     getInstallTargetModes,
     getProviderCatalogModels,
     installProviderEndpoints,
+    CONNECTION_MODES,
     syncFavoriteFlags,
     toggleFavoriteModel,
     sortResultsWithPinnedFavorites,

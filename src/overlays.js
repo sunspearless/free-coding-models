@@ -55,6 +55,8 @@ export function createOverlayRenderers(state, deps) {
     getConfiguredInstallableProviders,
     getInstallTargetModes,
     getProviderCatalogModels,
+    CONNECTION_MODES,
+    getToolMeta,
   } = deps
 
   // 📖 Wrap plain diagnostic text so long Settings messages stay readable inside
@@ -377,7 +379,7 @@ export function createOverlayRenderers(state, deps) {
   }
 
   // ─── Install Endpoints overlay renderer ───────────────────────────────────
-  // 📖 renderInstallEndpoints drives the provider → tool → scope → model flow
+  // 📖 renderInstallEndpoints drives the provider → tool → connection → scope → model flow
   // 📖 behind the `Y` hotkey. It deliberately reuses the same overlay viewport
   // 📖 helpers as Settings so long provider/model lists stay navigable.
   function renderInstallEndpoints() {
@@ -386,6 +388,8 @@ export function createOverlayRenderers(state, deps) {
     const cursorLineByRow = {}
     const providerChoices = getConfiguredInstallableProviders(state.config)
     const toolChoices = getInstallTargetModes()
+    const connectionChoices = CONNECTION_MODES || []
+    const totalSteps = 5
     const scopeChoices = [
       {
         key: 'all',
@@ -401,17 +405,21 @@ export function createOverlayRenderers(state, deps) {
     const selectedProviderLabel = state.installEndpointsProviderKey
       ? (sources[state.installEndpointsProviderKey]?.name || state.installEndpointsProviderKey)
       : '—'
+
+    // 📖 Resolve tool label from metadata instead of hard-coded switch
     const selectedToolLabel = state.installEndpointsToolMode
-      ? (state.installEndpointsToolMode === 'opencode-desktop'
-          ? 'OpenCode Desktop (shared opencode.json)'
-          : (state.installEndpointsToolMode === 'opencode'
-              ? 'OpenCode CLI (shared opencode.json)'
-              : state.installEndpointsToolMode === 'openclaw'
-                ? 'OpenClaw'
-                : state.installEndpointsToolMode === 'crush'
-                  ? 'Crush'
-                  : 'Goose'))
+      ? (() => {
+          const meta = getToolMeta(state.installEndpointsToolMode)
+          const suffix = state.installEndpointsToolMode.startsWith('opencode') ? ' (shared opencode.json)' : ''
+          return `${meta.label}${suffix}`
+        })()
       : '—'
+
+    const selectedConnectionLabel = state.installEndpointsConnectionMode === 'proxy'
+      ? 'FCM Proxy'
+      : state.installEndpointsConnectionMode === 'direct'
+        ? 'Direct Provider'
+        : '—'
 
     lines.push('')
     // 📖 Branding header
@@ -425,7 +433,7 @@ export function createOverlayRenderers(state, deps) {
     lines.push('')
 
     if (state.installEndpointsPhase === 'providers') {
-      lines.push(`  ${chalk.bold('Step 1/4')}  ${chalk.cyan('Choose a configured provider')}`)
+      lines.push(`  ${chalk.bold(`Step 1/${totalSteps}`)}  ${chalk.cyan('Choose a configured provider')}`)
       lines.push('')
 
       if (providerChoices.length === 0) {
@@ -435,7 +443,7 @@ export function createOverlayRenderers(state, deps) {
         providerChoices.forEach((provider, idx) => {
           const isCursor = idx === state.installEndpointsCursor
           const bullet = isCursor ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-          const row = `${bullet}${chalk.bold(provider.label.padEnd(24))} ${chalk.dim(`${provider.modelCount} models`)}` 
+          const row = `${bullet}${chalk.bold(provider.label.padEnd(24))} ${chalk.dim(`${provider.modelCount} models`)}`
           cursorLineByRow[idx] = lines.length
           lines.push(isCursor ? chalk.bgRgb(24, 44, 62)(row) : row)
         })
@@ -444,35 +452,49 @@ export function createOverlayRenderers(state, deps) {
       lines.push('')
       lines.push(chalk.dim('  ↑↓ Navigate  •  Enter Choose provider  •  Esc Close'))
     } else if (state.installEndpointsPhase === 'tools') {
-      lines.push(`  ${chalk.bold('Step 2/4')}  ${chalk.cyan('Choose the target tool')}`)
+      lines.push(`  ${chalk.bold(`Step 2/${totalSteps}`)}  ${chalk.cyan('Choose the target tool')}`)
       lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}`))
       lines.push('')
 
+      // 📖 Use getToolMeta for labels instead of hard-coded ternary chains
       toolChoices.forEach((toolMode, idx) => {
         const isCursor = idx === state.installEndpointsCursor
-        const label = toolMode === 'opencode-desktop'
-          ? 'OpenCode Desktop'
-          : toolMode === 'opencode'
-            ? 'OpenCode CLI'
-            : toolMode === 'openclaw'
-              ? 'OpenClaw'
-              : toolMode === 'crush'
-                ? 'Crush'
-                : 'Goose'
+        const meta = getToolMeta(toolMode)
+        const label = `${meta.emoji} ${meta.label}`
         const note = toolMode.startsWith('opencode')
           ? chalk.dim('shared config file')
-          : chalk.dim('managed provider install')
+          : ['claude-code', 'codex', 'openhands'].includes(toolMode)
+            ? chalk.dim('env file (~/.fcm-*-env)')
+            : chalk.dim('managed config install')
         const bullet = isCursor ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-        const row = `${bullet}${chalk.bold(label.padEnd(22))} ${note}`
+        const row = `${bullet}${chalk.bold(label.padEnd(26))} ${note}`
         cursorLineByRow[idx] = lines.length
         lines.push(isCursor ? chalk.bgRgb(24, 44, 62)(row) : row)
       })
 
       lines.push('')
       lines.push(chalk.dim('  ↑↓ Navigate  •  Enter Choose tool  •  Esc Back'))
-    } else if (state.installEndpointsPhase === 'scope') {
-      lines.push(`  ${chalk.bold('Step 3/4')}  ${chalk.cyan('Choose the install scope')}`)
+    } else if (state.installEndpointsPhase === 'connection') {
+      // 📖 Step 3: Choose connection mode — Direct Provider vs FCM Proxy
+      lines.push(`  ${chalk.bold(`Step 3/${totalSteps}`)}  ${chalk.cyan('Choose connection mode')}`)
       lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}  •  Tool: ${selectedToolLabel}`))
+      lines.push('')
+
+      connectionChoices.forEach((mode, idx) => {
+        const isCursor = idx === state.installEndpointsCursor
+        const bullet = isCursor ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
+        const icon = mode.key === 'proxy' ? '🔄' : '⚡'
+        const row = `${bullet}${icon} ${chalk.bold(mode.label)}`
+        cursorLineByRow[idx] = lines.length
+        lines.push(isCursor ? chalk.bgRgb(24, 44, 62)(row) : row)
+        lines.push(chalk.dim(`      ${mode.hint}`))
+        lines.push('')
+      })
+
+      lines.push(chalk.dim('  Enter Continue  •  Esc Back'))
+    } else if (state.installEndpointsPhase === 'scope') {
+      lines.push(`  ${chalk.bold(`Step 4/${totalSteps}`)}  ${chalk.cyan('Choose the install scope')}`)
+      lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}  •  Tool: ${selectedToolLabel}  •  ${selectedConnectionLabel}`))
       lines.push('')
 
       scopeChoices.forEach((scope, idx) => {
@@ -490,8 +512,8 @@ export function createOverlayRenderers(state, deps) {
       const models = getProviderCatalogModels(state.installEndpointsProviderKey)
       const selectedCount = state.installEndpointsSelectedModelIds.size
 
-      lines.push(`  ${chalk.bold('Step 4/4')}  ${chalk.cyan('Choose which models to install')}`)
-      lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}  •  Tool: ${selectedToolLabel}`))
+      lines.push(`  ${chalk.bold(`Step 5/${totalSteps}`)}  ${chalk.cyan('Choose which models to install')}`)
+      lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}  •  Tool: ${selectedToolLabel}  •  ${selectedConnectionLabel}`))
       lines.push(chalk.dim(`  Selected: ${selectedCount}/${models.length}`))
       lines.push('')
 
@@ -608,9 +630,9 @@ export function createOverlayRenderers(state, deps) {
     lines.push(`  ${chalk.yellow('W')}  Toggle ping mode  ${chalk.dim('(speed 2s → normal 10s → slow 30s → forced 4s)')}`)
     lines.push(`  ${chalk.yellow('E')}  Toggle configured models only  ${chalk.dim('(enabled by default, persisted globally + in profiles)')}`)
     lines.push(`  ${chalk.yellow('X')}  Toggle token log page  ${chalk.dim('(shows recent request usage from request-log.jsonl)')}`)
-    lines.push(`  ${chalk.yellow('Z')}  Cycle tool mode  ${chalk.dim('(OpenCode → Desktop → OpenClaw → Crush → Goose)')}`)
+    lines.push(`  ${chalk.yellow('Z')}  Cycle tool mode  ${chalk.dim('(OpenCode → Desktop → OpenClaw → Crush → Goose → Pi → Aider → Claude Code → Codex → Gemini → Qwen → OpenHands → Amp)')}`)
     lines.push(`  ${chalk.yellow('F')}  Toggle favorite on selected row  ${chalk.dim('(⭐ pinned at top, persisted)')}`)
-    lines.push(`  ${chalk.yellow('Y')}  Install endpoints  ${chalk.dim('(provider catalog → OpenCode/OpenClaw/Crush/Goose, no proxy)')}`)
+    lines.push(`  ${chalk.yellow('Y')}  Install endpoints  ${chalk.dim('(provider catalog → all tools, Direct or FCM Proxy)')}`)
     lines.push(`  ${chalk.yellow('Q')}  Smart Recommend  ${chalk.dim('(🎯 find the best model for your task — questionnaire + live analysis)')}`)
     lines.push(`  ${chalk.rgb(57, 255, 20).bold('J')}  Request Feature  ${chalk.dim('(📝 send anonymous feedback to the project team)')}`)
     lines.push(`  ${chalk.rgb(255, 87, 51).bold('I')}  Report Bug  ${chalk.dim('(🐛 send anonymous bug report to the project team)')}`)
@@ -641,15 +663,14 @@ export function createOverlayRenderers(state, deps) {
     lines.push(`  ${chalk.cyan('free-coding-models --openclaw')}           ${chalk.dim('OpenClaw mode')}`)
     lines.push(`  ${chalk.cyan('free-coding-models --crush')}              ${chalk.dim('Crush mode')}`)
     lines.push(`  ${chalk.cyan('free-coding-models --goose')}              ${chalk.dim('Goose mode')}`)
-    // 📖 Temporarily disabled launchers kept out of the public help until their flows are hardened.
-    // lines.push(`  ${chalk.cyan('free-coding-models --aider')}              ${chalk.dim('Aider mode')}`)
-    // lines.push(`  ${chalk.cyan('free-coding-models --claude-code')}        ${chalk.dim('Claude Code proxy mode')}`)
-    // lines.push(`  ${chalk.cyan('free-coding-models --codex')}              ${chalk.dim('Codex CLI proxy mode')}`)
-    // lines.push(`  ${chalk.cyan('free-coding-models --gemini')}             ${chalk.dim('Gemini CLI proxy mode')}`)
-    // lines.push(`  ${chalk.cyan('free-coding-models --qwen')}               ${chalk.dim('Qwen Code mode')}`)
-    // lines.push(`  ${chalk.cyan('free-coding-models --openhands')}          ${chalk.dim('OpenHands mode')}`)
-    // lines.push(`  ${chalk.cyan('free-coding-models --amp')}                ${chalk.dim('Amp mode')}`)
-    // lines.push(`  ${chalk.cyan('free-coding-models --pi')}                 ${chalk.dim('Pi mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --pi')}                 ${chalk.dim('Pi mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --aider')}              ${chalk.dim('Aider mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --claude-code')}        ${chalk.dim('Claude Code mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --codex')}              ${chalk.dim('Codex CLI mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --gemini')}             ${chalk.dim('Gemini CLI mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --qwen')}               ${chalk.dim('Qwen Code mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --openhands')}          ${chalk.dim('OpenHands mode')}`)
+    lines.push(`  ${chalk.cyan('free-coding-models --amp')}                ${chalk.dim('Amp mode')}`)
     lines.push(`  ${chalk.cyan('free-coding-models --best')}               ${chalk.dim('Only top tiers (A+, S, S+)')}`)
     lines.push(`  ${chalk.cyan('free-coding-models --fiable')}             ${chalk.dim('10s reliability analysis')}`)
     lines.push(`  ${chalk.cyan('free-coding-models --tier S|A|B|C')}       ${chalk.dim('Filter by tier letter')}`)
