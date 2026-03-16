@@ -2,6 +2,12 @@
 
 ---
 
+## 0.3.5
+
+### Fixed
+- **Claude Code beta-route compatibility**: FCM Proxy V2 now matches routes on the URL pathname, so Anthropic requests like `/v1/messages?beta=true` and `/v1/messages/count_tokens?beta=true` resolve correctly instead of failing with a fake “selected model may not exist” error.
+- **Claude proxy parity with `free-claude-code`**: The Claude integration was revalidated against the real `claude` binary, and the proxy-side Claude alias mapping now reaches the upstream provider again in the exact `free-claude-code` style flow.
+
 ## 0.3.4
 
 ### Added

@@ -182,12 +182,11 @@ bunx free-coding-models YOUR_API_KEY
 
 ### 🆕 What's New
 
-**Version 0.3.4 cleans up the public proxy/docs surface and ships a small stability pass:**
+**Version 0.3.5 fixes the main Claude Code proxy compatibility bug found in real-world use:**
 
-- **Browser hits on the proxy root are now friendly** — `GET /` returns a small status JSON instead of `{"error":"Unauthorized"}` when you sanity-check the proxy in a browser.
-- **`daemon stop` is now a real public CLI command** — the help text, the README, and the command parser all agree on the same daemon control surface.
-- **The README now matches the current UI exactly** — model count is `160`, the `Used` column is documented correctly, and the removed `Usage` column is no longer described.
-- **Malformed config sections are normalized safely on load** — corrupted `apiKeys`, `providers`, or `settings` values no longer leak through as broken runtime objects.
+- **Claude Code beta-route requests now work** — the proxy accepts Anthropic URLs like `/v1/messages?beta=true` and `/v1/messages/count_tokens?beta=true`, which is how recent Claude Code builds really call the API.
+- **Claude proxy flow now behaves like `free-claude-code` on the routing layer** — fake Claude model ids still map proxy-side to the selected free backend model, but the route matcher no longer breaks before that mapping can run.
+- **The fix was validated against the real `claude` binary** — not just unit tests. The exact failure `selected model (claude-sonnet-4-6) may not exist` is now gone in local end-to-end repro.
 
 ---
 

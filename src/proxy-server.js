@@ -108,6 +108,21 @@ function sendJson(res, statusCode, body) {
   res.end(json)
 }
 
+/**
+ * 📖 Match routes on the URL pathname only so Claude Code's `?beta=true`
+ * 📖 Anthropic requests resolve exactly like FastAPI routes do in free-claude-code.
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {string}
+ */
+function getRequestPathname(req) {
+  try {
+    return new URL(req.url || '/', 'http://127.0.0.1').pathname || '/'
+  } catch {
+    return req.url || '/'
+  }
+}
+
 function normalizeRequestedModel(modelId) {
   if (typeof modelId !== 'string') return null
   const trimmed = modelId.trim()
@@ -303,14 +318,16 @@ export class ProxyServer {
   // ── Request routing ────────────────────────────────────────────────────────
 
   _handleRequest(req, res) {
+    const pathname = getRequestPathname(req)
+
     // 📖 Root endpoint is unauthenticated so a browser hit on http://127.0.0.1:{port}/
     // 📖 gives a useful status payload instead of a misleading Unauthorized error.
-    if (req.method === 'GET' && req.url === '/') {
+    if (req.method === 'GET' && pathname === '/') {
       return this._handleRoot(res)
     }
 
     // 📖 Health endpoint is unauthenticated so external monitors can probe it
-    if (req.method === 'GET' && req.url === '/v1/health') {
+    if (req.method === 'GET' && pathname === '/v1/health') {
       return this._handleHealth(res)
     }
 
@@ -319,11 +336,11 @@ export class ProxyServer {
       return sendJson(res, 401, { error: 'Unauthorized' })
     }
 
-    if (req.method === 'GET' && req.url === '/v1/models') {
+    if (req.method === 'GET' && pathname === '/v1/models') {
       this._handleModels(res)
-    } else if (req.method === 'GET' && req.url === '/v1/stats') {
+    } else if (req.method === 'GET' && pathname === '/v1/stats') {
       this._handleStats(res)
-    } else if (req.method === 'POST' && req.url === '/v1/chat/completions') {
+    } else if (req.method === 'POST' && pathname === '/v1/chat/completions') {
       this._handleChatCompletions(req, res).catch(err => {
         console.error('[proxy] Internal error:', err)
         // 📖 Return 413 for body-too-large, generic 500 for everything else — never leak stack traces
@@ -331,7 +348,7 @@ export class ProxyServer {
         const msg = err.statusCode === 413 ? 'Request body too large' : 'Internal server error'
         sendJson(res, status, { error: msg })
       })
-    } else if (req.method === 'POST' && req.url === '/v1/messages') {
+    } else if (req.method === 'POST' && pathname === '/v1/messages') {
       // 📖 Anthropic Messages API translation — enables Claude Code compatibility
       this._handleAnthropicMessages(req, res, authContext).catch(err => {
         console.error('[proxy] Internal error:', err)
@@ -339,26 +356,26 @@ export class ProxyServer {
         const msg = err.statusCode === 413 ? 'Request body too large' : 'Internal server error'
         sendJson(res, status, { error: msg })
       })
-    } else if (req.method === 'POST' && req.url === '/v1/messages/count_tokens') {
+    } else if (req.method === 'POST' && pathname === '/v1/messages/count_tokens') {
       this._handleAnthropicCountTokens(req, res).catch(err => {
         console.error('[proxy] Internal error:', err)
         const status = err.statusCode === 413 ? 413 : 500
         const msg = err.statusCode === 413 ? 'Request body too large' : 'Internal server error'
         sendJson(res, status, { error: msg })
       })
-    } else if (req.method === 'POST' && req.url === '/v1/responses') {
+    } else if (req.method === 'POST' && pathname === '/v1/responses') {
       this._handleResponses(req, res).catch(err => {
         console.error('[proxy] Internal error:', err)
         const status = err.statusCode === 413 ? 413 : 500
         const msg = err.statusCode === 413 ? 'Request body too large' : 'Internal server error'
         sendJson(res, status, { error: msg })
       })
-    } else if (req.method === 'POST' && req.url === '/v1/completions') {
+    } else if (req.method === 'POST' && pathname === '/v1/completions') {
       // These legacy/alternative OpenAI endpoints are not supported by the proxy.
       // Return 501 (not 404) so callers get a clear signal instead of silently failing.
       sendJson(res, 501, {
         error: 'Not Implemented',
-        message: `${req.url} is not supported by this proxy. Use POST /v1/chat/completions instead.`,
+        message: `${pathname} is not supported by this proxy. Use POST /v1/chat/completions instead.`,
       })
     } else {
       sendJson(res, 404, { error: 'Not found' })

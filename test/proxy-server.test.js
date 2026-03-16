@@ -703,6 +703,24 @@ describe('ProxyServer – compatibility routes', () => {
     assert.ok(body.input_tokens > 0)
   })
 
+  it('POST /v1/messages/count_tokens accepts Claude beta query params', async () => {
+    const proxy = new ProxyServer({ port: 0, accounts: [] })
+    const { port } = await proxy.start()
+    cleanups.push(() => proxy.stop())
+
+    const res = await makeRequest(port, {
+      model: 'claude-sonnet-4-6',
+      system: 'You are a helpful coding assistant.',
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'Count the beta route tokens.' }] },
+      ],
+    }, 'POST', '/v1/messages/count_tokens?beta=true')
+
+    assert.strictEqual(res.statusCode, 200)
+    const body = JSON.parse(res.body)
+    assert.ok(body.input_tokens > 0)
+  })
+
   it('POST /v1/messages mirrors Claude proxy-side MODEL/MODEL_* routing', async () => {
     let capturedUpstreamModel = null
     const upstream = await new Promise((resolve) => {
@@ -763,6 +781,69 @@ describe('ProxyServer – compatibility routes', () => {
     const body = JSON.parse(res.body)
     assert.equal(body.type, 'message')
     assert.match(body.content[0].text, /mapped ok/i)
+    assert.equal(capturedUpstreamModel, 'provider-model')
+  })
+
+  it('POST /v1/messages accepts Claude beta query params and still routes proxy-side Claude aliases', async () => {
+    let capturedUpstreamModel = null
+    const upstream = await new Promise((resolve) => {
+      const server = http.createServer((req, res) => {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        req.on('end', () => {
+          capturedUpstreamModel = JSON.parse(body).model
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({
+            id: 'chatcmpl_claude_beta_route',
+            model: 'provider-model',
+            choices: [{ message: { content: 'beta ok' } }],
+            usage: { prompt_tokens: 4, completion_tokens: 3 },
+          }))
+        })
+      })
+      server.listen(0, '127.0.0.1', () => {
+        resolve({ server, url: `http://127.0.0.1:${server.address().port}` })
+      })
+    })
+    cleanups.push(() => upstream.server.close())
+
+    const proxy = new ProxyServer({
+      port: 0,
+      accounts: [{
+        id: 'claude-beta-route-acct',
+        providerKey: 'test',
+        apiKey: 'key-1',
+        modelId: 'provider-model',
+        proxyModelId: 'gpt-oss-120b',
+        url: upstream.url + '/v1',
+      }],
+      proxyApiKey: 'secret-key',
+      anthropicRouting: {
+        model: 'gpt-oss-120b',
+        modelOpus: 'gpt-oss-120b',
+        modelSonnet: 'gpt-oss-120b',
+        modelHaiku: 'gpt-oss-120b',
+      },
+    })
+    const { port } = await proxy.start()
+    cleanups.push(() => proxy.stop())
+
+    const res = await makeRequest(
+      port,
+      {
+        model: 'claude-sonnet-4-6',
+        max_tokens: 256,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi beta' }] }],
+      },
+      'POST',
+      '/v1/messages?beta=true',
+      { authorization: 'Bearer secret-key' },
+    )
+
+    assert.strictEqual(res.statusCode, 200)
+    const body = JSON.parse(res.body)
+    assert.equal(body.type, 'message')
+    assert.match(body.content[0].text, /beta ok/i)
     assert.equal(capturedUpstreamModel, 'provider-model')
   })
 
