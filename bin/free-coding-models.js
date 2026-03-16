@@ -271,6 +271,18 @@ async function main() {
       console.log()
       process.exit(result.success ? 0 : 1)
     }
+    if (daemonSubcmd === 'stop') {
+      const result = dm.stopDaemon()
+      console.log()
+      if (result.success) {
+        console.log(chalk.greenBright('  ✅ FCM Proxy V2 service stopped.'))
+        console.log(chalk.dim('  The service stays installed and can be restarted later.'))
+      } else {
+        console.log(chalk.red(`  ❌ Stop failed: ${result.error}`))
+      }
+      console.log()
+      process.exit(result.success ? 0 : 1)
+    }
     if (daemonSubcmd === 'logs') {
       const logPath = dm.getDaemonLogPath()
       console.log(chalk.dim(`  Log file: ${logPath}`))
@@ -283,7 +295,7 @@ async function main() {
       process.exit(0)
     }
     console.log(chalk.red(`  Unknown command: ${daemonSubcmd}`))
-    console.log(chalk.dim('  Usage: free-coding-models daemon [status|install|uninstall|restart|logs]'))
+    console.log(chalk.dim('  Usage: free-coding-models daemon [status|install|uninstall|restart|stop|logs]'))
     process.exit(1)
   }
 

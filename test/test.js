@@ -1149,6 +1149,7 @@ describe('cli help text', () => {
       'daemon install',
       'daemon uninstall',
       'daemon restart',
+      'daemon stop',
       'daemon logs',
     ]
 
@@ -1655,7 +1656,7 @@ describe('config profile functions', () => {
     assert.equal(explicit.anthropicRouting.modelSonnet, 'gpt-oss-120b')
   })
 
-  it('pins free-claude-code style MODEL and MODEL_* routing to one selected proxy model', () => {
+  it('pins Claude proxy MODEL and MODEL_* routing to one selected proxy model', () => {
     const config = { settings: {} }
     const changed = setClaudeProxyModelRouting(config, 'fcm-proxy/gpt-oss-120b')
     const proxySettings = getProxySettings(config)

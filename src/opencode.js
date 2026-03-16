@@ -577,7 +577,7 @@ export async function ensureProxyRunning(fcmConfig, { forceRestart = false } = {
 
   // 📖 Always prefer the background daemon when it is available. Launcher code
   // 📖 can update config and let the daemon hot-reload, which is closer to the
-  // 📖 free-claude-code model than spinning up tool-specific local proxies.
+  // 📖 Claude proxy model than spinning up tool-specific local proxies.
   try {
     const daemonRunning = await isDaemonRunning()
     if (daemonRunning) {

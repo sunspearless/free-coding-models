@@ -4,7 +4,7 @@
  * and OpenAI Chat Completions API.
  *
  * 📖 This is the key module that enables Claude Code to work natively through the
- *    FCM proxy without needing the external "free-claude-code" Python proxy.
+ *    FCM proxy without needing the external Claude proxy integration.
  *    Claude Code sends requests in Anthropic format (POST /v1/messages) and this
  *    module translates them to OpenAI format for the upstream providers, then
  *    translates the responses back.

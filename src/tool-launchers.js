@@ -19,7 +19,7 @@
  *   📖 Crush: writes crush.json with provider config + models.large/small defaults
  *   📖 Pi: uses --provider/--model CLI flags for guaranteed auto-selection
  *   📖 Aider: writes ~/.aider.conf.yml + passes --model flag
- *   📖 Claude Code: mirrors free-claude-code by keeping fake Claude model ids on the client,
+ *   📖 Claude Code: mirrors Claude proxy by keeping fake Claude model ids on the client,
  *      forcing a valid Claude alias at launch, and moving MODEL / MODEL_OPUS / MODEL_SONNET /
  *      MODEL_HAIKU routing into the proxy
  *   📖 Codex CLI: uses a custom model_provider override so Codex stays in explicit API-provider mode
@@ -27,7 +27,7 @@
  *
  * @functions
  *   → `resolveLauncherModelId` — choose the provider-specific id or proxy slug for a launch
- *   → `waitForClaudeProxyRouting` — wait until the daemon/proxy has reloaded the free-claude-code style Claude-family mapping
+ *   → `waitForClaudeProxyRouting` — wait until the daemon/proxy has reloaded the Claude proxy style Claude-family mapping
  *   → `buildClaudeProxyArgs` — force a valid Claude alias so stale local non-Claude selections cannot break launch
  *   → `buildCodexProxyArgs` — force Codex into a proxy-backed custom provider config
  *   → `inspectGeminiCliSupport` — detect whether the installed Gemini CLI can use proxy mode safely
@@ -646,7 +646,7 @@ export async function startExternalTool(mode, model, config) {
   }
 
   if (mode === 'claude-code') {
-    // 📖 Mirror free-claude-code exactly on the client side:
+    // 📖 Mirror Claude proxy exactly on the client side:
     // 📖 Claude gets only ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, and the
     // 📖 proxy owns the fake Claude model ids -> real backend model mapping.
     const launchModelId = resolveLauncherModelId(model, true)

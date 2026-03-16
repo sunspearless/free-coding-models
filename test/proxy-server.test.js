@@ -198,6 +198,29 @@ describe('ProxyServer', () => {
     assert.ok(Array.isArray(parsed.data), 'Should return models array')
   })
 
+  it('serves GET / with an unauthenticated status payload', async () => {
+    const upstream = await createMockUpstream({})
+    cleanups.push(() => upstream.server.close())
+
+    const accounts = [{
+      id: 'root-acct', providerKey: 'test', apiKey: 'key-1',
+      modelId: 'test-model', proxyModelId: 'gpt-oss-120b', url: upstream.url + '/v1',
+    }]
+    const proxy = new ProxyServer({ port: 0, accounts, proxyApiKey: 'secret-key' })
+    const { port } = await proxy.start()
+    cleanups.push(() => proxy.stop())
+
+    const res = await makeRequest(port, null, 'GET', '/')
+    const parsed = JSON.parse(res.body)
+
+    assert.strictEqual(res.statusCode, 200)
+    assert.equal(parsed.status, 'ok')
+    assert.equal(parsed.service, 'fcm-proxy-v2')
+    assert.equal(parsed.accountCount, 1)
+    assert.equal(parsed.modelCount, 1)
+    assert.equal(parsed.endpoints.health, '/v1/health')
+  })
+
   it('respects retry-after', async () => {
     const bad = await createMockUpstream({ error: 'rate limited' }, 429, { 'retry-after': '3600' })
     cleanups.push(() => bad.server.close())
@@ -680,7 +703,7 @@ describe('ProxyServer – compatibility routes', () => {
     assert.ok(body.input_tokens > 0)
   })
 
-  it('POST /v1/messages mirrors free-claude-code proxy-side MODEL/MODEL_* routing', async () => {
+  it('POST /v1/messages mirrors Claude proxy-side MODEL/MODEL_* routing', async () => {
     let capturedUpstreamModel = null
     const upstream = await new Promise((resolve) => {
       const server = http.createServer((req, res) => {
@@ -866,7 +889,7 @@ describe('ProxyServer – compatibility routes', () => {
     assert.equal(capturedUpstreamModel, 'provider-model')
   })
 
-  it('POST /v1/messages also remaps versioned Claude family ids like free-claude-code does', async () => {
+  it('POST /v1/messages also remaps versioned Claude family ids like Claude proxy does', async () => {
     const capturedUpstreamModels = []
     const upstream = await new Promise((resolve) => {
       const server = http.createServer((req, res) => {

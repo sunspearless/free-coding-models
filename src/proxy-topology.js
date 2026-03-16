@@ -67,7 +67,7 @@ export function buildProxyTopologyFromConfig(fcmConfig, mergedModels, sourcesMap
   return {
     accounts,
     proxyModels,
-    // 📖 Mirror free-claude-code: proxy-side Claude family routing is config-driven.
+    // 📖 Mirror Claude proxy: proxy-side Claude family routing is config-driven.
     anthropicRouting: getProxySettings(fcmConfig).anthropicRouting,
   }
 }

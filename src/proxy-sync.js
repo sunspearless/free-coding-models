@@ -34,7 +34,7 @@ const PROXY_PROVIDER_ID = 'fcm-proxy'
 
 // 📖 Tools that support proxy sync (have base URL + API key config)
 // 📖 Gemini is excluded — it only stores a model name, no URL/key fields.
-// 📖 Claude Code is excluded too: its free-claude-code style integration is
+// 📖 Claude proxy integration is
 // 📖 runtime-only now, with fake Claude ids handled by the proxy itself.
 export const PROXY_SYNCABLE_TOOLS = [
   'opencode', 'opencode-desktop', 'openclaw', 'crush', 'goose', 'pi',

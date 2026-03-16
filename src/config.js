@@ -100,7 +100,7 @@
  *   → setActiveProfile(config, name) — Set which profile is active (null to clear)
  *   → _emptyProfileSettings() — Default TUI settings for a profile
  *   → getProxySettings(config) — Return normalized proxy settings from config
- *   → setClaudeProxyModelRouting(config, modelId) — Mirror free-claude-code MODEL/MODEL_* routing onto one selected FCM model
+ *   → setClaudeProxyModelRouting(config, modelId) — Mirror Claude proxy MODEL/MODEL_* routing onto one selected FCM model
  *   → normalizeEndpointInstalls(endpointInstalls) — Keep tracked endpoint installs stable across app versions
  *
  * @exports loadConfig, saveConfig, validateConfigFile, getApiKey, isProviderEnabled
@@ -184,9 +184,9 @@ export function loadConfig() {
       const raw = readFileSync(CONFIG_PATH, 'utf8').trim()
       const parsed = JSON.parse(raw)
       // 📖 Ensure the shape is always complete — fill missing sections with defaults
-      if (!parsed.apiKeys) parsed.apiKeys = {}
-      if (!parsed.providers) parsed.providers = {}
-      if (!parsed.settings || typeof parsed.settings !== 'object') parsed.settings = {}
+      if (!parsed.apiKeys || typeof parsed.apiKeys !== 'object' || Array.isArray(parsed.apiKeys)) parsed.apiKeys = {}
+      if (!parsed.providers || typeof parsed.providers !== 'object' || Array.isArray(parsed.providers)) parsed.providers = {}
+      if (!parsed.settings || typeof parsed.settings !== 'object' || Array.isArray(parsed.settings)) parsed.settings = {}
       if (typeof parsed.settings.hideUnconfiguredModels !== 'boolean') parsed.settings.hideUnconfiguredModels = true
       parsed.settings.proxy = normalizeProxySettings(parsed.settings.proxy)
       // 📖 Favorites: list of "providerKey/modelId" pinned rows.
@@ -443,9 +443,10 @@ export function validateConfigFile(options = {}) {
       throw new Error('Config is not a valid object')
     }
 
-    // 📖 Check for critical corruption (apiKeys should be an object if it exists)
-    if (parsed.apiKeys !== null && parsed.apiKeys !== undefined && typeof parsed.apiKeys !== 'object') {
-      throw new Error('apiKeys field is corrupted')
+    // 📖 Check for critical corruption (apiKeys should be an object if it exists). If not, coerce to empty object to avoid loss.
+    if (parsed.apiKeys !== null && parsed.apiKeys !== undefined
+      && (typeof parsed.apiKeys !== 'object' || Array.isArray(parsed.apiKeys))) {
+      console.warn('⚠️  apiKeys field malformed, resetting to empty object')
     }
 
     return { valid: true }
@@ -658,7 +659,7 @@ function normalizeAnthropicRouting(anthropicRouting = null) {
   }
 
   return {
-    // 📖 Mirror free-claude-code naming: MODEL is the fallback, and MODEL_* are
+    // 📖 Mirror Claude proxy naming: MODEL is the fallback, and MODEL_* are
     // 📖 Claude-family overrides. FCM currently pins all four to one selected model.
     model: normalizeModelId(anthropicRouting?.model),
     modelOpus: normalizeModelId(anthropicRouting?.modelOpus),
@@ -719,7 +720,7 @@ export function getProxySettings(config) {
 }
 
 /**
- * 📖 Persist the free-claude-code style MODEL / MODEL_OPUS / MODEL_SONNET /
+ * 📖 Persist the Claude proxy style MODEL / MODEL_OPUS / MODEL_SONNET /
  * 📖 MODEL_HAIKU routing onto one selected proxy model. Claude Code itself then
  * 📖 keeps speaking in fake Claude model ids while the proxy chooses the backend.
  *

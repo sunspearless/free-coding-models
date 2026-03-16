@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/npm/v/free-coding-models?color=76b900&label=npm&logo=npm" alt="npm version">
   <img src="https://img.shields.io/node/v/free-coding-models?color=76b900&logo=node.js" alt="node version">
   <img src="https://img.shields.io/npm/l/free-coding-models?color=76b900" alt="license">
-  <img src="https://img.shields.io/badge/models-159-76b900?logo=nvidia" alt="models count">
+  <img src="https://img.shields.io/badge/models-160-76b900?logo=nvidia" alt="models count">
   <img src="https://img.shields.io/badge/providers-20-blue" alt="providers count">
 </p>
 
@@ -81,7 +81,7 @@ By Vanessa Depraute
 - **📈 Rolling averages** — Avg calculated from ALL successful pings since start
 - **📊 Uptime tracking** — Percentage of successful pings shown in real-time
 - **📐 Stability score** — Composite 0–100 score measuring consistency (p95, jitter, spikes, uptime)
-- **📊 Usage tracking** — Monitor remaining quota for each exact provider/model pair when the provider exposes it; otherwise the TUI shows a green dot instead of a misleading percentage.
+- **📊 Token usage tracking** — The proxy logs prompt+completion token usage per exact provider/model pair, and the TUI surfaces that history in the `Used` column and the request log overlay.
 - **📜 Request Log Overlay** — Press `X` to inspect recent proxied requests and token usage for exact provider/model pairs.
 - **📋 Changelog Overlay** — Press `N` to browse all versions in an index, then `Enter` to view details for any version with full scroll support
 - **🛠 MODEL_NOT_FOUND Rotation** — If a specific provider returns a 404 for a model, the TUI intelligently rotates through other available providers for the same model.
@@ -89,7 +89,7 @@ By Vanessa Depraute
 - **🎮 Interactive selection** — Navigate with arrow keys directly in the table, press Enter to act
 - **💻 OpenCode integration** — Auto-detects NIM setup, sets model as default, launches OpenCode
 - **🦞 OpenClaw integration** — Sets selected model as default provider in `~/.openclaw/openclaw.json`
-- **🧰 Public tool launchers** — `Enter` auto-configures and launches 10+ tools: `OpenCode CLI`, `OpenCode Desktop`, `OpenClaw`, `Crush`, `Goose`, `Aider`, `Claude Code`, `Codex`, `Gemini`, `Qwen`, `OpenHands`, `Amp`, and `Pi`. All tools auto-select the chosen model on launch.
+- **🧰 Public tool launchers** — `Enter` auto-configures and launches all 13 tool modes: `OpenCode CLI`, `OpenCode Desktop`, `OpenClaw`, `Crush`, `Goose`, `Aider`, `Claude Code`, `Codex`, `Gemini`, `Qwen`, `OpenHands`, `Amp`, and `Pi`. All tools auto-select the chosen model on launch.
 - **🔌 Install Endpoints flow** — Press `Y` to install one configured provider into the compatible persisted-config tools, with a choice between **Direct Provider** (pure API) or **FCM Proxy V2** (key rotation + usage tracking), then pick all models or a curated subset
 - **📝 Feature Request (J key)** — Send anonymous feedback directly to the project team
 - **🐛 Bug Report (I key)** — Send anonymous bug reports directly to the project team
@@ -182,13 +182,12 @@ bunx free-coding-models YOUR_API_KEY
 
 ### 🆕 What's New
 
-**Version 0.3.3 switches Claude Code to the exact `free-claude-code` pattern instead of injecting FCM slugs into Claude itself:**
+**Version 0.3.4 cleans up the public proxy/docs surface and ships a small stability pass:**
 
-- **Claude Code is proxy-only now** — FCM no longer tries to make Claude Code “select” `gpt-oss-120b` or any other free model directly. Claude still speaks in Claude model ids, and the proxy picks the real backend.
-- **Proxy-side `MODEL` / `MODEL_OPUS` / `MODEL_SONNET` / `MODEL_HAIKU` routing now drives Claude** — When you launch Claude Code from a selected FCM row, FCM writes the selected proxy slug into the proxy's Anthropic routing config, exactly like `free-claude-code`, then lets the daemon hot-reload it.
-- **Claude no longer gets `--model <fcm-slug>` or `ANTHROPIC_MODEL=<fcm-slug>`** — the launcher now passes only `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, which is the same clean client-side contract used by `free-claude-code`.
-- **Claude is now forced onto a real Claude alias at launch** — FCM starts Claude Code with `--model sonnet`, so stale local values like `gpt-oss-120b` cannot fail client-side before the proxy even receives the request.
-- **Claude sync/install leftovers were removed from the proxy path** — Claude Code is no longer treated like a persisted-config target for proxy sync; its integration is runtime-only, with fake Claude ids resolved by the proxy.
+- **Browser hits on the proxy root are now friendly** — `GET /` returns a small status JSON instead of `{"error":"Unauthorized"}` when you sanity-check the proxy in a browser.
+- **`daemon stop` is now a real public CLI command** — the help text, the README, and the command parser all agree on the same daemon control surface.
+- **The README now matches the current UI exactly** — model count is `160`, the `Used` column is documented correctly, and the removed `Usage` column is no longer described.
+- **Malformed config sections are normalized safely on load** — corrupted `apiKeys`, `providers`, or `settings` values no longer leak through as broken runtime objects.
 
 ---
 
@@ -246,7 +245,7 @@ Running `free-coding-models` with no launcher flag starts in **OpenCode CLI** mo
 - The active target is always visible in the header badge before you press `Enter`
 
 **How it works:**
- 1. **Ping phase** — All enabled models are pinged in parallel (up to 159 across 20 providers)
+ 1. **Ping phase** — All enabled models are pinged in parallel (up to 160 across 20 providers)
  2. **Continuous monitoring** — Models start at 2s re-pings for 60s, then fall back to 10s automatically, and slow to 30s after 5 minutes idle unless you force 4s mode with `W`
 3. **Real-time updates** — Watch "Latest", "Avg", and "Up%" columns update live
 4. **Select anytime** — Use ↑↓ arrows to navigate, press Enter on a model to act
@@ -429,7 +428,7 @@ TOGETHER_API_KEY=together_xxx free-coding-models
 
 ## 🤖 Coding Models
 
-**159 coding models** across 20 providers and 8 tiers, ranked by [SWE-bench Verified](https://www.swebench.com) — the industry-standard benchmark measuring real GitHub issue resolution. Scores are self-reported by providers unless noted.
+**160 coding models** across 20 providers and 8 tiers, ranked by [SWE-bench Verified](https://www.swebench.com) — the industry-standard benchmark measuring real GitHub issue resolution. Scores are self-reported by providers unless noted.
 
 ### Alibaba Cloud (DashScope) (8 models)
 
@@ -513,7 +512,6 @@ The main table displays one row per model with the following columns:
 | **Stability** | `B` | Composite 0–100 consistency score (see [Stability Score](#-stability-score)) |
 | **Up%** | `U` | Uptime — percentage of successful pings |
 | **Used** | — | Total prompt+completion tokens consumed in logs for this exact provider/model pair, shown in `k` or `M` |
-| **Usage** | `G` | Provider-scoped quota remaining when measurable; otherwise a green dot means usage % is not applicable/reliable for that provider |
 
 ### Verdict values
 
@@ -601,6 +599,8 @@ free-coding-models daemon stop        # Graceful stop (SIGTERM)
 free-coding-models daemon uninstall   # Remove OS service completely
 free-coding-models daemon logs        # Show recent service logs
 ```
+
+For a quick browser sanity-check, open [http://127.0.0.1:18045/](http://127.0.0.1:18045/) or [http://127.0.0.1:18045/v1/health](http://127.0.0.1:18045/v1/health) while the proxy is running.
 
 ### Service management
 

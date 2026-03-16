@@ -40,6 +40,7 @@ const COMMANDS = [
   { command: 'daemon install', description: 'Install and start the background service' },
   { command: 'daemon uninstall', description: 'Remove the background service' },
   { command: 'daemon restart', description: 'Restart the background service' },
+  { command: 'daemon stop', description: 'Gracefully stop the background service without uninstalling it' },
   { command: 'daemon logs', description: 'Print the latest daemon log lines' },
 ]
 
@@ -70,7 +71,7 @@ export function buildCliHelpLines({ chalk = null, indent = '', title = 'CLI Help
 
   lines.push(`${indent}${paint(chalk, chalk?.bold, title)}`)
   lines.push(`${indent}${paint(chalk, chalk?.dim, 'Usage: free-coding-models [apiKey] [options]')}`)
-  lines.push(`${indent}${paint(chalk, chalk?.dim, '       free-coding-models daemon [status|install|uninstall|restart|logs]')}`)
+  lines.push(`${indent}${paint(chalk, chalk?.dim, '       free-coding-models daemon [status|install|uninstall|restart|stop|logs]')}`)
   lines.push('')
   lines.push(`${indent}${paint(chalk, chalk?.bold, 'Tool Flags')}`)
   for (const entry of launchFlags) {
