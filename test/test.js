@@ -50,7 +50,14 @@ import { buildMergedModels } from '../src/model-merger.js'
 import { setOpenCodeModelData } from '../src/opencode.js'
 import { resolveProxySyncToolMode } from '../src/proxy-sync.js'
 import { buildCliHelpText } from '../src/cli-help.js'
-import { buildCodexProxyArgs, buildToolEnv, extractGeminiConfigError, resolveLauncherModelId } from '../src/tool-launchers.js'
+import {
+  applyClaudeCodeModelOverrides,
+  buildClaudeProxyAuthToken,
+  buildCodexProxyArgs,
+  buildToolEnv,
+  extractGeminiConfigError,
+  resolveLauncherModelId,
+} from '../src/tool-launchers.js'
 import { parseLogLine } from '../src/log-reader.js'
 import { getConfiguredInstallableProviders, getInstallTargetModes, installProviderEndpoints } from '../src/endpoint-installer.js'
 
@@ -1804,6 +1811,23 @@ describe('tool launcher env building', () => {
     assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'nvapi-test')
     assert.equal(env.OPENAI_API_KEY, undefined)
     assert.equal(env.OPENAI_BASE_URL, undefined)
+  })
+
+  it('pins Claude helper model slots to the selected proxy model', () => {
+    const env = {}
+    applyClaudeCodeModelOverrides(env, 'gpt-oss-120b')
+
+    assert.equal(env.ANTHROPIC_MODEL, 'gpt-oss-120b')
+    assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'gpt-oss-120b')
+    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'gpt-oss-120b')
+    assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'gpt-oss-120b')
+    assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, 'gpt-oss-120b')
+    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, 'gpt-oss-120b')
+  })
+
+  it('encodes the Claude proxy auth token with the selected model hint', () => {
+    assert.equal(buildClaudeProxyAuthToken('fcm_secret', 'gpt-oss-120b'), 'fcm_secret:gpt-oss-120b')
+    assert.equal(buildClaudeProxyAuthToken('fcm_secret', ''), 'fcm_secret')
   })
 
   it('builds explicit custom-provider args for Codex proxy launches', () => {

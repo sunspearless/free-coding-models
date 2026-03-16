@@ -25,13 +25,16 @@
  *
  * @functions
  *   → `resolveLauncherModelId` — choose the provider-specific id or proxy slug for a launch
+ *   → `applyClaudeCodeModelOverrides` — force Claude Code auxiliary model slots onto the chosen proxy model
+ *   → `buildClaudeProxyAuthToken` — encode the proxy token + selected model hint for Claude-only fallback routing
  *   → `buildCodexProxyArgs` — force Codex into a proxy-backed custom provider config
  *   → `inspectGeminiCliSupport` — detect whether the installed Gemini CLI can use proxy mode safely
  *   → `writeGooseConfig` — install provider + set GOOSE_PROVIDER/GOOSE_MODEL in config.yaml
  *   → `writeCrushConfig` — write provider + models.large/small to crush.json
  *   → `startExternalTool` — configure and launch the selected external tool mode
  *
- * @exports resolveLauncherModelId, buildCodexProxyArgs, inspectGeminiCliSupport, startExternalTool
+ * @exports resolveLauncherModelId, applyClaudeCodeModelOverrides, buildClaudeProxyAuthToken
+ * @exports buildCodexProxyArgs, inspectGeminiCliSupport, startExternalTool
  *
  * @see src/tool-metadata.js
  * @see src/provider-metadata.js
@@ -65,6 +68,11 @@ const ANTHROPIC_ENV_KEYS = [
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
 ]
 const GEMINI_ENV_KEYS = [
   'GEMINI_API_KEY',
@@ -144,6 +152,28 @@ function applyOpenAiCompatEnv(env, apiKey, baseUrl, modelId) {
 export function resolveLauncherModelId(model, useProxy = false) {
   if (useProxy) return resolveProxyModelId(model)
   return model?.modelId ?? ''
+}
+
+export function applyClaudeCodeModelOverrides(env, modelId) {
+  const resolvedModelId = typeof modelId === 'string' ? modelId.trim() : ''
+  if (!resolvedModelId) return env
+
+  // 📖 Claude Code still uses auxiliary model slots (opus/sonnet/haiku/subagents)
+  // 📖 even when a custom primary model is selected. Pin them all to the same slug.
+  env.ANTHROPIC_MODEL = resolvedModelId
+  env.ANTHROPIC_DEFAULT_OPUS_MODEL = resolvedModelId
+  env.ANTHROPIC_DEFAULT_SONNET_MODEL = resolvedModelId
+  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = resolvedModelId
+  env.ANTHROPIC_SMALL_FAST_MODEL = resolvedModelId
+  env.CLAUDE_CODE_SUBAGENT_MODEL = resolvedModelId
+  return env
+}
+
+export function buildClaudeProxyAuthToken(proxyToken, modelId) {
+  const resolvedProxyToken = typeof proxyToken === 'string' ? proxyToken.trim() : ''
+  const resolvedModelId = typeof modelId === 'string' ? modelId.trim() : ''
+  if (!resolvedProxyToken) return ''
+  return resolvedModelId ? `${resolvedProxyToken}:${resolvedModelId}` : resolvedProxyToken
 }
 
 export function buildToolEnv(mode, model, config, options = {}) {
@@ -610,8 +640,8 @@ export async function startExternalTool(mode, model, config) {
     const proxyBase = `http://127.0.0.1:${started.port}`
     const launchModelId = resolveLauncherModelId(model, true)
     proxyEnv.ANTHROPIC_BASE_URL = proxyBase
-    proxyEnv.ANTHROPIC_AUTH_TOKEN = started.proxyToken
-    proxyEnv.ANTHROPIC_MODEL = launchModelId
+    proxyEnv.ANTHROPIC_AUTH_TOKEN = buildClaudeProxyAuthToken(started.proxyToken, launchModelId)
+    applyClaudeCodeModelOverrides(proxyEnv, launchModelId)
     console.log(chalk.dim(`  📖 Claude Code routed through FCM proxy on :${started.port} (Anthropic translation enabled)`))
     return spawnCommand('claude', ['--model', launchModelId], proxyEnv)
   }

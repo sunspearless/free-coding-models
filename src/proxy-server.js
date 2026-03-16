@@ -1,7 +1,7 @@
 /**
  * @file lib/proxy-server.js
  * @description Multi-account rotation proxy server with SSE streaming,
- * token stats tracking, and persistent request logging.
+ * token stats tracking, Anthropic/OpenAI translation, and persistent request logging.
  *
  * Design:
  *   - Binds to 127.0.0.1 only (never 0.0.0.0)
@@ -10,6 +10,8 @@
  *   - x-ratelimit-* headers are stripped from all responses forwarded to clients
  *   - Retry loop: first attempt uses sticky session fingerprint; subsequent
  *     retries use fresh P2C to avoid hitting the same failed account
+ *   - Claude-family aliases are resolved inside the proxy so Claude Code can
+ *     keep emitting `claude-*` / `sonnet` / `haiku` style model ids safely
  *
  * @exports ProxyServer
  */
@@ -106,6 +108,49 @@ function sendJson(res, statusCode, body) {
   res.end(json)
 }
 
+function normalizeRequestedModel(modelId) {
+  if (typeof modelId !== 'string') return null
+  const trimmed = modelId.trim()
+  if (!trimmed) return null
+  return trimmed.replace(/^fcm-proxy\//, '')
+}
+
+function classifyClaudeVirtualModel(modelId) {
+  const normalized = normalizeRequestedModel(modelId)
+  if (!normalized) return null
+
+  const lower = normalized.toLowerCase()
+
+  // 📖 Mirror free-claude-code's family routing approach: classify by Claude
+  // 📖 family keywords, not only exact ids. Claude Code regularly emits both
+  // 📖 short aliases (`sonnet`) and full versioned ids (`claude-3-5-sonnet-*`).
+  if (lower === 'default') return 'default'
+  if (/^opus(?:plan)?(?:\[1m\])?$/.test(lower)) return 'opus'
+  if (/^sonnet(?:\[1m\])?$/.test(lower)) return 'sonnet'
+  if (lower === 'haiku') return 'haiku'
+  if (!lower.startsWith('claude-')) return null
+  if (lower.includes('opus')) return 'opus'
+  if (lower.includes('haiku')) return 'haiku'
+  if (lower.includes('sonnet')) return 'sonnet'
+  return null
+}
+
+function parseProxyAuthorizationHeader(authorization, expectedToken) {
+  if (!expectedToken) return { authorized: true, modelHint: null }
+  if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
+    return { authorized: false, modelHint: null }
+  }
+
+  const rawToken = authorization.slice('Bearer '.length).trim()
+  if (rawToken === expectedToken) return { authorized: true, modelHint: null }
+  if (!rawToken.startsWith(`${expectedToken}:`)) return { authorized: false, modelHint: null }
+
+  const modelHint = normalizeRequestedModel(rawToken.slice(expectedToken.length + 1))
+  return modelHint
+    ? { authorized: true, modelHint }
+    : { authorized: false, modelHint: null }
+}
+
 // ─── ProxyServer ─────────────────────────────────────────────────────────────
 
 export class ProxyServer {
@@ -194,11 +239,32 @@ export class ProxyServer {
     }
   }
 
+  _getAuthContext(req) {
+    return parseProxyAuthorizationHeader(req.headers.authorization, this._proxyApiKey)
+  }
+
   _isAuthorized(req) {
-    if (!this._proxyApiKey) return true
-    const authorization = req.headers.authorization
-    if (typeof authorization !== 'string') return false
-    return authorization === `Bearer ${this._proxyApiKey}`
+    return this._getAuthContext(req).authorized
+  }
+
+  _resolveAnthropicRequestedModel(modelId, authModelHint = null) {
+    const requestedModel = normalizeRequestedModel(modelId)
+    if (requestedModel && this._accountManager.hasAccountsForModel(requestedModel)) {
+      return requestedModel
+    }
+
+    // 📖 Claude Code still emits internal aliases / tier model ids for some
+    // 📖 background and helper paths. When the launcher encoded the selected
+    // 📖 proxy slug into the auth token, remap those virtual Claude ids here.
+    // 📖 This intentionally matches Claude families by substring so ids like
+    // 📖 `claude-3-5-sonnet-20241022` behave the same as `sonnet`.
+    if (authModelHint && this._accountManager.hasAccountsForModel(authModelHint)) {
+      if (!requestedModel || classifyClaudeVirtualModel(requestedModel)) {
+        return authModelHint
+      }
+    }
+
+    return requestedModel
   }
 
   // ── Request routing ────────────────────────────────────────────────────────
@@ -209,7 +275,8 @@ export class ProxyServer {
       return this._handleHealth(res)
     }
 
-    if (!this._isAuthorized(req)) {
+    const authContext = this._getAuthContext(req)
+    if (!authContext.authorized) {
       return sendJson(res, 401, { error: 'Unauthorized' })
     }
 
@@ -227,7 +294,7 @@ export class ProxyServer {
       })
     } else if (req.method === 'POST' && req.url === '/v1/messages') {
       // 📖 Anthropic Messages API translation — enables Claude Code compatibility
-      this._handleAnthropicMessages(req, res).catch(err => {
+      this._handleAnthropicMessages(req, res, authContext).catch(err => {
         console.error('[proxy] Internal error:', err)
         const status = err.statusCode === 413 ? 413 : 500
         const msg = err.statusCode === 413 ? 'Request body too large' : 'Internal server error'
@@ -733,7 +800,7 @@ export class ProxyServer {
    *
    * 📖 This makes Claude Code work natively through the FCM proxy.
    */
-  async _handleAnthropicMessages(clientReq, clientRes) {
+  async _handleAnthropicMessages(clientReq, clientRes, authContext = { modelHint: null }) {
     const rawBody = await readBody(clientReq)
     let anthropicBody
     try {
@@ -744,6 +811,8 @@ export class ProxyServer {
 
     // 📖 Translate Anthropic → OpenAI
     const openaiBody = translateAnthropicToOpenAI(anthropicBody)
+    const resolvedModel = this._resolveAnthropicRequestedModel(openaiBody.model, authContext.modelHint)
+    if (resolvedModel) openaiBody.model = resolvedModel
     const isStreaming = openaiBody.stream === true
 
     if (isStreaming) {

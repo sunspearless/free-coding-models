@@ -182,13 +182,12 @@ bunx free-coding-models YOUR_API_KEY
 
 ### 🆕 What's New
 
-**Version 0.3.1 tightens the proxy/tooling path and ships the missing diagnostics:**
+**Version 0.3.2 hardens the Claude Code proxy path to match the routing strategy that works in `free-claude-code`:**
 
-- **Claude Code proxy launches are cleaner** — FCM now launches Claude Code with an Anthropic-only proxy contract (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) instead of mixing auth modes.
-- **Codex proxy launches now use the right API path** — Codex is forced into an explicit custom provider config and the proxy now implements `POST /v1/responses`.
-- **Gemini proxy launches fail fast when unsupported** — Older Gemini CLI builds and invalid local config are detected up front, with a clear message instead of a misleading broken launch.
-- **Proxy auto-sync follows the current tool** — The FCM Proxy V2 overlay no longer relies on a separate active-tool picker, and `Y` now lists only stable persisted-config install targets.
-- **Beta messaging is explicit** — The README and runtime launcher diagnostics now call out that proxy-backed external tool support is still stabilizing.
+- **Claude Code family-model routing is now proxy-side** — FCM remaps Claude's internal family ids such as `claude-3-5-sonnet-*`, `claude-3-haiku-*`, `claude-3-opus-*`, `sonnet`, `haiku`, and `default` back to the selected FCM proxy model.
+- **Claude Code helper model slots are pinned** — FCM now exports the selected model into `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`, and `CLAUDE_CODE_SUBAGENT_MODEL` so background/helper requests stop drifting.
+- **Claude proxy auth now carries the selected model hint** — The launcher encodes the chosen proxy model into `ANTHROPIC_AUTH_TOKEN`, giving the proxy a reliable fallback even when Claude Code ignores the visible `/model` selection.
+- **Proxy support remains beta** — External-tool proxy support is still stabilizing, but Claude Code should now behave much closer to the working `free-claude-code` setup.
 
 ---
 
