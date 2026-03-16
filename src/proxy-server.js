@@ -130,7 +130,7 @@ function classifyClaudeVirtualModel(modelId) {
 
   const lower = normalized.toLowerCase()
 
-  // 📖 Mirror Claude proxy's family routing approach: classify by Claude
+  // 📖 Mirror free-claude-code's family routing approach: classify by Claude
   // 📖 family keywords, not only exact ids. Claude Code regularly emits both
   // 📖 short aliases (`sonnet`) and full versioned ids (`claude-3-5-sonnet-*`).
   if (lower === 'default') return 'default'
@@ -156,7 +156,7 @@ function resolveAnthropicMappedModel(modelId, anthropicRouting) {
   if (family === 'sonnet') return routing.modelSonnet || fallbackModel
   if (family === 'haiku') return routing.modelHaiku || fallbackModel
 
-  // 📖 Claude proxy falls back to MODEL for unknown Claude ids too.
+  // 📖 free-claude-code falls back to MODEL for unknown Claude ids too.
   return fallbackModel
 }
 
@@ -290,7 +290,7 @@ export class ProxyServer {
     // 📖 Claude Code still emits internal aliases / tier model ids for some
     // 📖 background and helper paths. Keep the old auth-token hint as a final
     // 📖 compatibility fallback for already-launched sessions, but the primary
-    // 📖 routing path is now the Claude proxy style proxy-side mapping above.
+    // 📖 routing path is now the free-claude-code style proxy-side mapping above.
     if (authModelHint && this._accountManager.hasAccountsForModel(authModelHint)) {
       if (!requestedModel || classifyClaudeVirtualModel(requestedModel) || requestedModel.toLowerCase().startsWith('claude-')) {
         return authModelHint
