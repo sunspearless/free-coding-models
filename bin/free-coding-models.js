@@ -212,6 +212,13 @@ async function main() {
   if (cliArgs.showUnconfigured) config.settings.hideUnconfiguredModels = false
   if (cliArgs.disableWidthsWarning) config.settings.disableWidthsWarning = true
 
+  // 📖 Apply premium mode: show only S‑tier models sorted by verdict
+  if (cliArgs.premiumMode) {
+    config.settings.tierFilter = 'S'
+    config.settings.sortColumn = 'verdict'
+    config.settings.sortAsc = true
+  }
+
   if (cliArgs.cleanProxyMode) {
     const cleaned = cleanupOpenCodeProxyConfig()
     console.log()
@@ -508,8 +515,9 @@ async function main() {
     mode,                         // 📖 'opencode' or 'openclaw' — controls Enter action
     tierFilterMode: 0,            // 📖 Index into TIER_CYCLE (0=All, 1=S+, 2=S, ...)
     originFilterMode: 0,          // 📖 Index into ORIGIN_CYCLE (0=All, then providers)
-hideUnconfiguredModels: startupProfileSettings?.hideUnconfiguredModels === true || config.settings?.hideUnconfiguredModels === true, // 📖 Hide providers with no configured API key when true.
-      disableWidthsWarning: config.settings?.disableWidthsWarning ?? false, // 📖 Disable widths warning toggle (default off)
+    premiumMode: cliArgs.premiumMode, // 📖 Special elite-only mode: S/S+ only, Health UP only, Perfect/Normal/Slow verdict only.
+    hideUnconfiguredModels: startupProfileSettings?.hideUnconfiguredModels === true || config.settings?.hideUnconfiguredModels === true, // 📖 Hide providers with no configured API key when true.
+    disableWidthsWarning: config.settings?.disableWidthsWarning ?? false, // 📖 Disable widths warning toggle (default off)
       scrollOffset: 0,              // 📖 First visible model index in viewport
       terminalRows: process.stdout.rows || 24,  // 📖 Current terminal height
       terminalCols: process.stdout.columns || 80, // 📖 Current terminal width
@@ -765,6 +773,17 @@ hideUnconfiguredModels: startupProfileSettings?.hideUnconfiguredModels === true 
       outputResults = outputResults.filter(r => ['S+', 'S', 'A+'].includes(r.tier))
     }
 
+    // 📖 Apply premium mode filter if specified: elite-only (S/S+, UP, Good Verdict)
+    if (cliArgs.premiumMode) {
+      outputResults = outputResults.filter(r => {
+        const isEliteTier = r.tier === 'S' || r.tier === 'S+'
+        const isHealthUp = r.status === 'up'
+        const verdict = getVerdict(r)
+        const isGoodVerdict = ['Perfect', 'Normal', 'Slow'].includes(verdict)
+        return isEliteTier && isHealthUp && isGoodVerdict
+      })
+    }
+
     // 📖 Sort by avg ping (ascending)
     outputResults = sortResults(outputResults, 'avg', 'asc')
 
@@ -814,9 +833,23 @@ hideUnconfiguredModels: startupProfileSettings?.hideUnconfiguredModels === true 
         return
       }
       // 📖 Apply both tier and origin filters — model is hidden if it fails either
-      const tierHide = activeTier !== null && r.tier !== activeTier
+      // 📖 TIER_LETTER_MAP is used so --tier S also includes S+ models (tier family behavior).
+      const allowedTiers = (activeTier && TIER_LETTER_MAP[activeTier]) ? TIER_LETTER_MAP[activeTier] : [activeTier]
+      const tierHide = activeTier !== null && !allowedTiers.includes(r.tier)
       const originHide = activeOrigin !== null && r.providerKey !== activeOrigin
       r.hidden = tierHide || originHide
+
+      // 📖 Premium Mode: elite-only constraints (Health UP, Good Verdict, S/S+ only)
+      if (state.premiumMode && !r.hidden) {
+        const isEliteTier = r.tier === 'S' || r.tier === 'S+'
+        const isHealthUp = r.status === 'up'
+        const verdict = getVerdict(r)
+        const isGoodVerdict = ['Perfect', 'Normal', 'Slow'].includes(verdict)
+
+        if (!isEliteTier || !isHealthUp || !isGoodVerdict) {
+          r.hidden = true
+        }
+      }
     })
     return state.results
   }

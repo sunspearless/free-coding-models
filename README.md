@@ -946,7 +946,7 @@ This script:
 
 ### 🎁 Premium Flag
 
-The `--premium` flag provides a quick view of only the elite **S‑tier** models, sorted by their **verdict** (which combines latency, stability and uptime). This is useful when you want to focus exclusively on the highest‑quality, most reliable models.
+The `--premium` flag provides a quick view of only the elite **S/S+ tier** models with perfect health (**UP**) and a good verdict (**Perfect**, **Normal**, or **Slow**). This is useful when you want to focus exclusively on the highest‑quality, most reliable models that are currently available.
 
 ```bash
 free-coding-models --premium
@@ -954,6 +954,8 @@ free-coding-models --premium
 
 What it does under the hood:
 - Sets `tierFilter` to `S` (showing only S+ and S tier models).
+- Filters out any model that is not currently **UP** (hides 429, 410, auth fail, timeouts, etc.).
+- Filters out models with poor verdicts (hides **Spiky**, **Very Slow**, **Overloaded**, **Unstable**, etc.).
 - Forces the sort column to `verdict` with ascending order, so the best‑rated models appear at the top.
 - Leaves other settings untouched, so you can still combine it with flags like `--json` for scripting.
 

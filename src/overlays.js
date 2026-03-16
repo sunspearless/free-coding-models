@@ -736,7 +736,8 @@ const profileStartIdx = updateRowIdx + 5
         } catch { /* keep raw */ }
 
         const requestedModelLabel = row.requestedModel || ''
-        const displayModel = row.switched && requestedModelLabel && requestedModelLabel !== row.model
+        // 📖 Always show "requested → actual" if they differ, not just when switched
+        const displayModel = requestedModelLabel && requestedModelLabel !== row.model
           ? `${requestedModelLabel} → ${row.model}`
           : row.model
 
@@ -781,9 +782,11 @@ const profileStartIdx = updateRowIdx + 5
         const isFailedWithZeroTokens = row.status !== '200' && (!row.tokens || Number(row.tokens) === 0)
 
         const timeCell  = chalk.dim(timeStr.slice(0, W_TIME).padEnd(W_TIME))
-        // 📖 Color provider the same way as in the main table (row.provider is already the providerKey, e.g. "nvidia")
+        // 📖 Provider display: Use pretty label if available, otherwise raw key.
+        // 📖 All these logs are from FCM Proxy V2.
+        const providerLabel = PROVIDER_METADATA[row.provider]?.label || row.provider
         const providerRgb = PROVIDER_COLOR[row.provider] ?? [105, 190, 245]
-        const provCell  = chalk.bold.rgb(...providerRgb)(row.provider.slice(0, W_PROV).padEnd(W_PROV))
+        const provCell  = chalk.bold.rgb(...providerRgb)(providerLabel.slice(0, W_PROV).padEnd(W_PROV))
 
         // 📖 Color model based on status - red for failed requests with zero tokens
         let modelCell

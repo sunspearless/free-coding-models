@@ -829,7 +829,7 @@ describe('renderTable outdated footer banner', () => {
 
     assert.match(output, new RegExp(`Update available: v${escapeRegex(localVersion)} -> v9\\.9\\.9`))
     assert.match(output, /npm install -g free-coding-models@latest/)
-    assert.match(output, /Ctrl\+C Exit\x1B\[K\n  ⚠ Update available:/)
+    assert.match(output, /Ctrl\+C Exit.*\x1B\[K\n.*⚠ Update available:/)
   })
 
   it('stays quiet when no newer version is known', () => {

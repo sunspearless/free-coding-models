@@ -26,7 +26,7 @@ const ANALYSIS_FLAGS = [
   { flag: '--json', description: 'Output results as JSON for scripts/automation' },
   { flag: '--tier <S|A|B|C>', description: 'Filter models by tier family' },
   { flag: '--recommend', description: 'Open Smart Recommend immediately on startup' },
-  { flag: '--premium', description: 'Show only S‑tier models sorted by verdict' },
+  { flag: '--premium', description: 'Show only S/S+ models with perfect health and good verdict' },
   { flag: '--sort <column>', description: 'Sort by column (rank, tier, origin, model, ping, avg, swe, ctx, condition, verdict, uptime, stability, usage)' },
   { flag: '--desc | --asc', description: 'Set sort direction (descending or ascending)' },
   { flag: '--origin <provider>', description: 'Filter models by provider origin' },
