@@ -9,34 +9,23 @@
  *   📖 The design is pragmatic:
  *   - Write a small managed config file when the tool's config shape is stable enough
  *   - Always export the runtime environment variables before spawning the tool
+ *   - Persist the selected model into the tool config before launch so Enter
+ *     really means "open this tool on this model right now"
  *   - Keep each launcher isolated so a partial integration does not break others
- *
- *   📖 Some tools still have weaker official support for arbitrary custom providers.
- *   For those, we prefer a transparent warning over pretending the integration is
- *   fully official. The user still gets a reproducible env/config handoff.
  *
  *   📖 Goose: writes custom provider JSON + secrets.yaml + updates config.yaml (GOOSE_PROVIDER/GOOSE_MODEL)
  *   📖 Crush: writes crush.json with provider config + models.large/small defaults
  *   📖 Pi: uses --provider/--model CLI flags for guaranteed auto-selection
  *   📖 Aider: writes ~/.aider.conf.yml + passes --model flag
- *   📖 Claude Code: mirrors Claude proxy by keeping fake Claude model ids on the client,
- *      forcing a valid Claude alias at launch, and moving MODEL / MODEL_OPUS / MODEL_SONNET /
- *      MODEL_HAIKU routing into the proxy
- *   📖 Codex CLI: uses a custom model_provider override so Codex stays in explicit API-provider mode
- *   📖 Gemini CLI: proxy mode is capability-gated because older builds do not support custom base URL routing cleanly
  *
  * @functions
- *   → `resolveLauncherModelId` — choose the provider-specific id or proxy slug for a launch
- *   → `waitForClaudeProxyRouting` — wait until the daemon/proxy has reloaded the Claude proxy style Claude-family mapping
- *   → `buildClaudeProxyArgs` — force a valid Claude alias so stale local non-Claude selections cannot break launch
- *   → `buildCodexProxyArgs` — force Codex into a proxy-backed custom provider config
- *   → `inspectGeminiCliSupport` — detect whether the installed Gemini CLI can use proxy mode safely
+ *   → `resolveLauncherModelId` — choose the provider-specific id for a launch
  *   → `writeGooseConfig` — install provider + set GOOSE_PROVIDER/GOOSE_MODEL in config.yaml
  *   → `writeCrushConfig` — write provider + models.large/small to crush.json
+ *   → `prepareExternalToolLaunch` — persist selected-model defaults and compute the launch command
  *   → `startExternalTool` — configure and launch the selected external tool mode
  *
- * @exports resolveLauncherModelId, waitForClaudeProxyRouting, buildClaudeProxyArgs, buildCodexProxyArgs
- * @exports inspectGeminiCliSupport, startExternalTool
+ * @exports resolveLauncherModelId, buildToolEnv, prepareExternalToolLaunch, startExternalTool
  *
  * @see src/tool-metadata.js
  * @see src/provider-metadata.js
@@ -44,16 +33,15 @@
  */
 
 import chalk from 'chalk'
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync, copyFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from 'fs'
 import { homedir } from 'os'
-import { delimiter, dirname, join } from 'path'
-import { spawn, spawnSync } from 'child_process'
+import { dirname, join } from 'path'
+import { spawn } from 'child_process'
 import { sources } from '../sources.js'
 import { PROVIDER_COLOR } from './render-table.js'
-import { getApiKey, getProxySettings, saveConfig, setClaudeProxyModelRouting } from './config.js'
+import { getApiKey } from './config.js'
 import { ENV_VAR_NAMES, isWindows } from './provider-metadata.js'
 import { getToolMeta } from './tool-metadata.js'
-import { ensureProxyRunning, resolveProxyModelId } from './opencode.js'
 import { PROVIDER_METADATA } from './provider-metadata.js'
 
 const OPENAI_COMPAT_ENV_KEYS = [
@@ -65,33 +53,26 @@ const OPENAI_COMPAT_ENV_KEYS = [
   'LLM_BASE_URL',
   'LLM_MODEL',
 ]
-const ANTHROPIC_ENV_KEYS = [
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_SMALL_FAST_MODEL',
-  'CLAUDE_CODE_SUBAGENT_MODEL',
-]
-const GEMINI_ENV_KEYS = [
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  'GOOGLE_GEMINI_BASE_URL',
-  'GOOGLE_VERTEX_BASE_URL',
-]
-const PROXY_SANITIZED_ENV_KEYS = [...OPENAI_COMPAT_ENV_KEYS, ...ANTHROPIC_ENV_KEYS, ...GEMINI_ENV_KEYS]
-const GEMINI_PROXY_MIN_VERSION = '0.34.0'
-const EXPERIMENTAL_PROXY_TOOLS_NOTE = 'FCM Proxy V2 support for external tools is still in beta, so some launch and authentication flows can remain flaky while the integration stabilizes.'
-const CLAUDE_PROXY_RELOAD_TIMEOUT_MS = 4000
-const CLAUDE_PROXY_RELOAD_INTERVAL_MS = 200
-const CLAUDE_PROXY_CLIENT_MODEL = 'sonnet'
+const SANITIZED_TOOL_ENV_KEYS = [...OPENAI_COMPAT_ENV_KEYS]
 
 function ensureDir(filePath) {
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+}
+
+function getDefaultToolPaths(homeDir = homedir()) {
+  return {
+    aiderConfigPath: join(homeDir, '.aider.conf.yml'),
+    crushConfigPath: join(homeDir, '.config', 'crush', 'crush.json'),
+    gooseProvidersDir: join(homeDir, '.config', 'goose', 'custom_providers'),
+    gooseSecretsPath: join(homeDir, '.config', 'goose', 'secrets.yaml'),
+    gooseConfigPath: join(homeDir, '.config', 'goose', 'config.yaml'),
+    qwenConfigPath: join(homeDir, '.qwen', 'settings.json'),
+    ampConfigPath: join(homeDir, '.config', 'amp', 'settings.json'),
+    piModelsPath: join(homeDir, '.pi', 'agent', 'models.json'),
+    piSettingsPath: join(homeDir, '.pi', 'agent', 'settings.json'),
+    openHandsEnvPath: join(homeDir, '.fcm-openhands-env'),
+  }
 }
 
 function backupIfExists(filePath) {
@@ -147,27 +128,14 @@ function applyOpenAiCompatEnv(env, apiKey, baseUrl, modelId) {
 }
 
 /**
- * 📖 resolveLauncherModelId keeps proxy-backed launches on the universal
- * 📖 `fcm-proxy` catalog slug instead of leaking a provider-specific upstream id.
+ * 📖 resolveLauncherModelId returns the provider-native id used by the direct
+ * 📖 launchers. Legacy bridge-specific model remapping has been removed.
  *
  * @param {{ label?: string, modelId?: string }} model
- * @param {boolean} useProxy
  * @returns {string}
  */
-export function resolveLauncherModelId(model, useProxy = false) {
-  if (useProxy) return resolveProxyModelId(model)
+export function resolveLauncherModelId(model) {
   return model?.modelId ?? ''
-}
-
-/**
- * 📖 Force Claude Code to start on a real Claude alias, never on an FCM slug.
- * 📖 Older FCM launches poisoned Claude's local model state with `gpt-oss-*`,
- * 📖 and Claude rejects those client-side before any proxy request is made.
- *
- * @returns {string[]}
- */
-export function buildClaudeProxyArgs() {
-  return ['--model', CLAUDE_PROXY_CLIENT_MODEL]
 }
 
 export function buildToolEnv(mode, model, config, options = {}) {
@@ -181,7 +149,7 @@ export function buildToolEnv(mode, model, config, options = {}) {
   const providerUrl = sources[providerKey]?.url || ''
   const baseUrl = getProviderBaseUrl(providerKey)
   const apiKey = sanitize ? (config?.apiKeys?.[providerKey] ?? null) : getApiKey(config, providerKey)
-  const env = cloneInheritedEnv(inheritedEnv, sanitize ? PROXY_SANITIZED_ENV_KEYS : [])
+  const env = cloneInheritedEnv(inheritedEnv, sanitize ? SANITIZED_TOOL_ENV_KEYS : [])
   const providerEnvName = ENV_VAR_NAMES[providerKey]
   if (includeProviderEnv && providerEnvName && apiKey) env[providerEnvName] = apiKey
 
@@ -196,152 +164,7 @@ export function buildToolEnv(mode, model, config, options = {}) {
     env.LLM_MODEL = `openai/${model.modelId}`
   }
 
-  // 📖 Provider-specific envs for tools that expect a different wire format.
-  if (mode === 'claude-code' && apiKey && baseUrl) {
-    env.ANTHROPIC_AUTH_TOKEN = apiKey
-    env.ANTHROPIC_BASE_URL = baseUrl
-  }
-
-  if (mode === 'gemini' && apiKey && baseUrl) {
-    env.GEMINI_API_KEY = apiKey
-    env.GOOGLE_API_KEY = apiKey
-    env.GOOGLE_GEMINI_BASE_URL = baseUrl
-  }
-
   return { env, apiKey, baseUrl, providerUrl }
-}
-
-export async function waitForClaudeProxyRouting(port, token, expectedModelId) {
-  const expected = typeof expectedModelId === 'string' ? expectedModelId.trim().replace(/^fcm-proxy\//, '') : ''
-  if (!expected || !port || !token) return false
-
-  const deadline = Date.now() + CLAUDE_PROXY_RELOAD_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/v1/stats`, {
-        headers: { authorization: `Bearer ${token}` },
-      })
-      if (res.ok) {
-        const payload = await res.json()
-        const active = payload?.anthropicRouting?.model
-        if (typeof active === 'string' && active.replace(/^fcm-proxy\//, '') === expected) {
-          return true
-        }
-      }
-    } catch { /* daemon may still be reloading — keep polling */ }
-
-    await new Promise(resolve => setTimeout(resolve, CLAUDE_PROXY_RELOAD_INTERVAL_MS))
-  }
-
-  return false
-}
-
-export function buildCodexProxyArgs(baseUrl) {
-  return [
-    '-c', 'model_provider="fcm_proxy"',
-    '-c', 'model_providers.fcm_proxy.name="FCM Proxy V2"',
-    '-c', `model_providers.fcm_proxy.base_url=${JSON.stringify(baseUrl)}`,
-    '-c', 'model_providers.fcm_proxy.env_key="FCM_PROXY_API_KEY"',
-    '-c', 'model_providers.fcm_proxy.wire_api="responses"',
-  ]
-}
-
-function compareSemver(a, b) {
-  const left = String(a || '').split('.').map(part => Number.parseInt(part, 10) || 0)
-  const right = String(b || '').split('.').map(part => Number.parseInt(part, 10) || 0)
-  const length = Math.max(left.length, right.length)
-  for (let idx = 0; idx < length; idx++) {
-    const lhs = left[idx] || 0
-    const rhs = right[idx] || 0
-    if (lhs > rhs) return 1
-    if (lhs < rhs) return -1
-  }
-  return 0
-}
-
-function findExecutableOnPath(command) {
-  const pathValue = process.env.PATH || ''
-  const candidates = process.platform === 'win32'
-    ? [command, `${command}.cmd`, `${command}.exe`]
-    : [command]
-
-  for (const dir of pathValue.split(delimiter).filter(Boolean)) {
-    for (const candidate of candidates) {
-      const fullPath = join(dir, candidate)
-      try {
-        accessSync(fullPath, constants.X_OK)
-        return fullPath
-      } catch { /* not executable */ }
-    }
-  }
-  return null
-}
-
-function findPackageJsonUpwards(startPath) {
-  let current = dirname(startPath)
-  while (current && current !== dirname(current)) {
-    const packageJsonPath = join(current, 'package.json')
-    if (existsSync(packageJsonPath)) return packageJsonPath
-    current = dirname(current)
-  }
-  return null
-}
-
-function detectGeminiCliVersion(binaryPath) {
-  if (!binaryPath) return null
-  try {
-    const realPath = realpathSync(binaryPath)
-    const versionMatch = realPath.match(/gemini-cli[\\/](\d+\.\d+\.\d+)(?:[\\/]|$)/)
-    if (versionMatch?.[1]) return versionMatch[1]
-
-    const packageJsonPath = findPackageJsonUpwards(realPath)
-    if (!packageJsonPath) return null
-    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
-    if (typeof pkg?.version === 'string' && pkg.version.length > 0) {
-      return pkg.version
-    }
-  } catch { /* best effort */ }
-  return null
-}
-
-export function extractGeminiConfigError(output) {
-  const text = String(output || '').trim()
-  if (!text.includes('Invalid configuration in ')) return null
-  const lines = text.split(/\r?\n/).filter(Boolean)
-  return lines.slice(0, 8).join('\n')
-}
-
-export function inspectGeminiCliSupport(options = {}) {
-  const binaryPath = options.binaryPath || findExecutableOnPath(options.command || 'gemini')
-  if (!binaryPath) {
-    return {
-      installed: false,
-      version: null,
-      supportsProxyBaseUrl: false,
-      configError: null,
-      reason: 'Gemini CLI is not installed in PATH.',
-    }
-  }
-
-  const version = options.version || detectGeminiCliVersion(binaryPath)
-  const helpResult = options.helpResult || spawnSync(binaryPath, ['--help'], {
-    encoding: 'utf8',
-    timeout: 5000,
-    env: options.inheritedEnv || process.env,
-  })
-  const helpOutput = `${helpResult.stdout || ''}\n${helpResult.stderr || ''}`.trim()
-  const configError = extractGeminiConfigError(helpOutput)
-  const supportsProxyBaseUrl = version ? compareSemver(version, GEMINI_PROXY_MIN_VERSION) >= 0 : false
-
-  return {
-    installed: true,
-    version,
-    supportsProxyBaseUrl,
-    configError,
-    reason: supportsProxyBaseUrl
-      ? null
-      : `Gemini CLI ${version || '(unknown version)'} does not expose stable custom base URL support for proxy mode yet.`,
-  }
 }
 
 function spawnCommand(command, args, env) {
@@ -365,8 +188,8 @@ function spawnCommand(command, args, env) {
   })
 }
 
-function writeAiderConfig(model, apiKey, baseUrl) {
-  const filePath = join(homedir(), '.aider.conf.yml')
+function writeAiderConfig(model, apiKey, baseUrl, paths = getDefaultToolPaths()) {
+  const filePath = paths.aiderConfigPath
   const backupPath = backupIfExists(filePath)
   const content = [
     '# 📖 Managed by free-coding-models',
@@ -380,8 +203,8 @@ function writeAiderConfig(model, apiKey, baseUrl) {
   return { filePath, backupPath }
 }
 
-function writeCrushConfig(model, apiKey, baseUrl, providerId) {
-  const filePath = join(homedir(), '.config', 'crush', 'crush.json')
+function writeCrushConfig(model, apiKey, baseUrl, providerId, paths = getDefaultToolPaths()) {
+  const filePath = paths.crushConfigPath
   const backupPath = backupIfExists(filePath)
   const config = readJson(filePath, { $schema: 'https://charm.land/crush.json' })
   // 📖 Remove legacy disable_default_providers — it can prevent Crush from auto-selecting models
@@ -412,17 +235,8 @@ function writeCrushConfig(model, apiKey, baseUrl, providerId) {
   return { filePath, backupPath }
 }
 
-function writeGeminiConfig(model) {
-  const filePath = join(homedir(), '.gemini', 'settings.json')
-  const backupPath = backupIfExists(filePath)
-  const config = readJson(filePath, {})
-  config.model = model.modelId
-  writeJson(filePath, config)
-  return { filePath, backupPath }
-}
-
-function writeQwenConfig(model, providerKey, apiKey, baseUrl) {
-  const filePath = join(homedir(), '.qwen', 'settings.json')
+function writeQwenConfig(model, providerKey, apiKey, baseUrl, paths = getDefaultToolPaths()) {
+  const filePath = paths.qwenConfigPath
   const backupPath = backupIfExists(filePath)
   const config = readJson(filePath, {})
   if (!config.modelProviders || typeof config.modelProviders !== 'object') config.modelProviders = {}
@@ -441,9 +255,9 @@ function writeQwenConfig(model, providerKey, apiKey, baseUrl) {
   return { filePath, backupPath, envKey: nextEntry.envKey, apiKey }
 }
 
-function writePiConfig(model, apiKey, baseUrl) {
+function writePiConfig(model, apiKey, baseUrl, paths = getDefaultToolPaths()) {
   // 📖 Write models.json with the selected provider config
-  const modelsFilePath = join(homedir(), '.pi', 'agent', 'models.json')
+  const modelsFilePath = paths.piModelsPath
   const modelsBackupPath = backupIfExists(modelsFilePath)
   const modelsConfig = readJson(modelsFilePath, { providers: {} })
   if (!modelsConfig.providers || typeof modelsConfig.providers !== 'object') modelsConfig.providers = {}
@@ -456,7 +270,7 @@ function writePiConfig(model, apiKey, baseUrl) {
   writeJson(modelsFilePath, modelsConfig)
 
   // 📖 Write settings.json to set the model as default on next launch
-  const settingsFilePath = join(homedir(), '.pi', 'agent', 'settings.json')
+  const settingsFilePath = paths.piSettingsPath
   const settingsBackupPath = backupIfExists(settingsFilePath)
   const settingsConfig = readJson(settingsFilePath, {})
   settingsConfig.defaultProvider = 'freeCodingModels'
@@ -469,15 +283,13 @@ function writePiConfig(model, apiKey, baseUrl) {
 // 📖 writeGooseConfig: Install/update the provider in Goose's custom_providers/, set the
 // 📖 API key in secrets.yaml, and update config.yaml with GOOSE_PROVIDER + GOOSE_MODEL
 // 📖 so Goose auto-selects the model on launch.
-function writeGooseConfig(model, apiKey, baseUrl, providerKey) {
-  const home = homedir()
+function writeGooseConfig(model, apiKey, baseUrl, providerKey, paths = getDefaultToolPaths()) {
   const providerId = `fcm-${providerKey}`
   const providerLabel = PROVIDER_METADATA[providerKey]?.label || sources[providerKey]?.name || providerKey
   const secretEnvName = `FCM_${providerKey.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`
 
   // 📖 Step 1: Write custom provider JSON (same format as endpoint-installer)
-  const providerDir = join(home, '.config', 'goose', 'custom_providers')
-  const providerFilePath = join(providerDir, `${providerId}.json`)
+  const providerFilePath = join(paths.gooseProvidersDir, `${providerId}.json`)
   ensureDir(providerFilePath)
   const providerConfig = {
     name: providerId,
@@ -493,7 +305,7 @@ function writeGooseConfig(model, apiKey, baseUrl, providerKey) {
   writeFileSync(providerFilePath, JSON.stringify(providerConfig, null, 2) + '\n')
 
   // 📖 Step 2: Write API key to secrets.yaml (simple key: value format)
-  const secretsPath = join(home, '.config', 'goose', 'secrets.yaml')
+  const secretsPath = paths.gooseSecretsPath
   let secretsContent = ''
   if (existsSync(secretsPath)) {
     secretsContent = readFileSync(secretsPath, 'utf8')
@@ -510,7 +322,8 @@ function writeGooseConfig(model, apiKey, baseUrl, providerKey) {
   writeFileSync(secretsPath, secretsContent)
 
   // 📖 Step 3: Update config.yaml — set GOOSE_PROVIDER and GOOSE_MODEL at top level
-  const configPath = join(home, '.config', 'goose', 'config.yaml')
+  const configPath = paths.gooseConfigPath
+  const configBackupPath = backupIfExists(configPath)
   let configContent = ''
   if (existsSync(configPath)) {
     configContent = readFileSync(configPath, 'utf8')
@@ -530,11 +343,11 @@ function writeGooseConfig(model, apiKey, baseUrl, providerKey) {
   }
   writeFileSync(configPath, configContent)
 
-  return { providerFilePath, secretsPath, configPath }
+  return { providerFilePath, secretsPath, configPath, configBackupPath }
 }
 
-function writeAmpConfig(model, baseUrl) {
-  const filePath = join(homedir(), '.config', 'amp', 'settings.json')
+function writeAmpConfig(model, baseUrl, paths = getDefaultToolPaths()) {
+  const filePath = paths.ampConfigPath
   const backupPath = backupIfExists(filePath)
   const config = readJson(filePath, {})
   config['amp.url'] = baseUrl
@@ -543,228 +356,241 @@ function writeAmpConfig(model, baseUrl) {
   return { filePath, backupPath }
 }
 
-function printConfigResult(toolName, result) {
-  if (!result?.filePath) return
-  console.log(chalk.dim(`  📄 ${toolName} config updated: ${result.filePath}`))
-  if (result.backupPath) console.log(chalk.dim(`  💾 Backup: ${result.backupPath}`))
+function writeOpenHandsEnv(model, apiKey, baseUrl, paths = getDefaultToolPaths()) {
+  const filePath = paths.openHandsEnvPath
+  const backupPath = backupIfExists(filePath)
+  const lines = [
+    '# 📖 Managed by free-coding-models',
+    `export OPENAI_API_KEY="${apiKey}"`,
+    `export OPENAI_BASE_URL="${baseUrl}"`,
+    `export OPENAI_MODEL="${model.modelId}"`,
+    `export LLM_API_KEY="${apiKey}"`,
+    `export LLM_BASE_URL="${baseUrl}"`,
+    `export LLM_MODEL="openai/${model.modelId}"`,
+  ]
+  ensureDir(filePath)
+  writeFileSync(filePath, lines.join('\n') + '\n')
+  return { filePath, backupPath }
 }
 
-function printExperimentalProxyNote() {
-  console.log(chalk.dim(`  ${EXPERIMENTAL_PROXY_TOOLS_NOTE}`))
+function printConfigArtifacts(toolName, artifacts = []) {
+  for (const artifact of artifacts) {
+    if (!artifact?.path) continue
+    const label = artifact.label ? `${artifact.label}: ` : ''
+    console.log(chalk.dim(`  📄 ${toolName} ${label}${artifact.path}`))
+    if (artifact.backupPath) console.log(chalk.dim(`  💾 Backup: ${artifact.backupPath}`))
+  }
 }
 
-export async function startExternalTool(mode, model, config) {
+/**
+ * 📖 prepareExternalToolLaunch persists the selected model into the target tool's
+ * 📖 config before launch, then returns the exact command/env/args that should
+ * 📖 be spawned. This makes launcher behavior unit-testable without requiring
+ * 📖 the real CLIs in PATH.
+ *
+ * @param {string} mode
+ * @param {{ providerKey: string, modelId: string, label: string }} model
+ * @param {Record<string, unknown>} config
+ * @param {{
+ *   paths?: Partial<ReturnType<typeof getDefaultToolPaths>>,
+ *   inheritedEnv?: NodeJS.ProcessEnv,
+ * }} [options]
+ * @returns {{
+ *   blocked?: boolean,
+ *   exitCode?: number,
+ *   warnings?: string[],
+ *   command?: string,
+ *   args?: string[],
+ *   env?: NodeJS.ProcessEnv,
+ *   apiKey?: string | null,
+ *   baseUrl?: string | null,
+ *   meta: { label: string, emoji: string, flag: string | null },
+ *   configArtifacts: Array<{ path: string, backupPath: string | null, label?: string }>
+ * }}
+ */
+export function prepareExternalToolLaunch(mode, model, config, options = {}) {
   const meta = getToolMeta(mode)
-  const { env, apiKey, baseUrl } = buildToolEnv(mode, model, config)
-  const proxySettings = getProxySettings(config)
+  const paths = { ...getDefaultToolPaths(), ...(options.paths || {}) }
+  const { env, apiKey, baseUrl } = buildToolEnv(mode, model, config, {
+    inheritedEnv: options.inheritedEnv,
+  })
 
   if (!apiKey && mode !== 'amp') {
-    // 📖 Color provider name the same way as in the main table
     const providerRgb = PROVIDER_COLOR[model.providerKey] ?? [105, 190, 245]
     const providerName = sources[model.providerKey]?.name || model.providerKey
     const coloredProviderName = chalk.bold.rgb(...providerRgb)(providerName)
-    console.log(chalk.yellow(`  ⚠ No API key configured for ${coloredProviderName}.`))
-    console.log(chalk.dim('  Configure the provider first from the Settings screen (P) or via env vars.'))
-    console.log()
-    return 1
+    return {
+      blocked: true,
+      exitCode: 1,
+      warnings: [
+        `  ⚠ No API key configured for ${coloredProviderName}.`,
+        '  Configure the provider first from the Settings screen (P) or via env vars.',
+      ],
+      meta,
+      configArtifacts: [],
+    }
   }
 
-  console.log(chalk.cyan(`  ▶ Launching ${meta.label} with ${chalk.bold(model.label)}...`))
-
   if (mode === 'aider') {
-    printConfigResult(meta.label, writeAiderConfig(model, apiKey, baseUrl))
-    return spawnCommand('aider', ['--model', `openai/${model.modelId}`], env)
+    const result = writeAiderConfig(model, apiKey, baseUrl, paths)
+    return {
+      command: 'aider',
+      args: ['--model', `openai/${model.modelId}`],
+      env,
+      apiKey,
+      baseUrl,
+      meta,
+      configArtifacts: [{ path: result.filePath, backupPath: result.backupPath, label: 'config' }],
+    }
   }
 
   if (mode === 'crush') {
-    let crushApiKey = apiKey
-    let crushBaseUrl = baseUrl
-    let providerId = 'freeCodingModels'
-    let launchModelId = resolveLauncherModelId(model, false)
-
-    if (proxySettings.enabled) {
-      const started = await ensureProxyRunning(config)
-      crushApiKey = started.proxyToken
-      crushBaseUrl = `http://127.0.0.1:${started.port}/v1`
-      providerId = 'freeCodingModelsProxy'
-      launchModelId = resolveLauncherModelId(model, true)
-      console.log(chalk.dim(`  📖 Crush will use the local FCM proxy on :${started.port} for this launch.`))
-    } else {
-      console.log(chalk.dim('  📖 Crush will use the provider directly for this launch.'))
+    const launchModelId = resolveLauncherModelId(model)
+    applyOpenAiCompatEnv(env, apiKey, baseUrl, launchModelId)
+    const result = writeCrushConfig({ ...model, modelId: launchModelId }, apiKey, baseUrl, 'freeCodingModels', paths)
+    return {
+      command: 'crush',
+      args: [],
+      env,
+      apiKey,
+      baseUrl,
+      meta,
+      configArtifacts: [{ path: result.filePath, backupPath: result.backupPath, label: 'config' }],
     }
-
-    const launchModel = { ...model, modelId: launchModelId }
-    applyOpenAiCompatEnv(env, crushApiKey, crushBaseUrl, launchModelId)
-    printConfigResult(meta.label, writeCrushConfig(launchModel, crushApiKey, crushBaseUrl, providerId))
-    return spawnCommand('crush', [], env)
   }
 
   if (mode === 'goose') {
-    let gooseBaseUrl = sources[model.providerKey]?.url || baseUrl || ''
-    let gooseApiKey = apiKey
-    let gooseModelId = resolveLauncherModelId(model, false)
-    let gooseProviderKey = model.providerKey
-
-    if (proxySettings.enabled) {
-      const started = await ensureProxyRunning(config)
-      gooseApiKey = started.proxyToken
-      gooseBaseUrl = `http://127.0.0.1:${started.port}/v1/chat/completions`
-      gooseModelId = resolveLauncherModelId(model, true)
-      gooseProviderKey = 'proxy'
-      console.log(chalk.dim(`  📖 Goose will use the local FCM proxy on :${started.port} for this launch.`))
-    }
-
-    // 📖 Write Goose config: custom provider JSON + secrets.yaml + config.yaml (GOOSE_PROVIDER/GOOSE_MODEL)
-    const gooseResult = writeGooseConfig({ ...model, modelId: gooseModelId }, gooseApiKey, gooseBaseUrl, gooseProviderKey)
-    console.log(chalk.dim(`  📄 Goose config updated: ${gooseResult.configPath}`))
-    console.log(chalk.dim(`  📄 Provider installed: ${gooseResult.providerFilePath}`))
-
-    // 📖 Also set env vars as belt-and-suspenders
-    env.GOOSE_PROVIDER = `fcm-${gooseProviderKey}`
+    const gooseBaseUrl = sources[model.providerKey]?.url || baseUrl || ''
+    const gooseModelId = resolveLauncherModelId(model)
+    const result = writeGooseConfig({ ...model, modelId: gooseModelId }, apiKey, gooseBaseUrl, model.providerKey, paths)
+    env.GOOSE_PROVIDER = `fcm-${model.providerKey}`
     env.GOOSE_MODEL = gooseModelId
-    applyOpenAiCompatEnv(env, gooseApiKey, gooseBaseUrl.replace(/\/chat\/completions$/, ''), gooseModelId)
-    return spawnCommand('goose', [], env)
-  }
-
-  // 📖 Codex and Gemini require FCM Proxy V2 to talk to the free-provider mesh.
-  if (mode === 'codex' || mode === 'gemini') {
-    if (!proxySettings.enabled) {
-      console.log()
-      console.log(chalk.red(`  ✖ ${meta.label} requires FCM Proxy V2 to work with free providers.`))
-      console.log()
-      console.log(chalk.yellow('  The proxy translates between provider protocols and handles key rotation,'))
-      console.log(chalk.yellow('  which is required for this tool to connect.'))
-      console.log(chalk.dim(`  ${EXPERIMENTAL_PROXY_TOOLS_NOTE}`))
-      console.log()
-      console.log(chalk.white('  To enable it:'))
-      console.log(chalk.dim('    1. Press ') + chalk.bold.white('J') + chalk.dim(' to open FCM Proxy V2 settings'))
-      console.log(chalk.dim('    2. Enable ') + chalk.bold.white('Proxy mode') + chalk.dim(' and install the ') + chalk.bold.white('background service'))
-      console.log(chalk.dim('    3. Come back and select your model again'))
-      console.log()
-      return 1
+    applyOpenAiCompatEnv(env, apiKey, gooseBaseUrl.replace(/\/chat\/completions$/, ''), gooseModelId)
+    return {
+      command: 'goose',
+      args: [],
+      env,
+      apiKey,
+      baseUrl,
+      meta,
+      configArtifacts: [
+        { path: result.providerFilePath, backupPath: null, label: 'provider' },
+        { path: result.secretsPath, backupPath: null, label: 'secrets' },
+        { path: result.configPath, backupPath: result.configBackupPath || null, label: 'config' },
+      ],
     }
-  }
-
-  if (mode === 'claude-code') {
-    // 📖 Mirror Claude proxy exactly on the client side:
-    // 📖 Claude gets only ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, and the
-    // 📖 proxy owns the fake Claude model ids -> real backend model mapping.
-    const launchModelId = resolveLauncherModelId(model, true)
-    const routingChanged = setClaudeProxyModelRouting(config, launchModelId)
-    if (routingChanged) {
-      const saveResult = saveConfig(config)
-      if (!saveResult.success) {
-        console.log()
-        console.log(chalk.red('  ✖ Failed to persist the Claude proxy routing before launch.'))
-        console.log(chalk.dim(`  ${saveResult.error || 'Unknown config write error.'}`))
-        console.log()
-        return 1
-      }
-    }
-
-    const started = await ensureProxyRunning(config, { forceRestart: true })
-    const { env: proxyEnv } = buildToolEnv(mode, model, config, {
-      sanitize: true,
-      includeCompatDefaults: false,
-      includeProviderEnv: false,
-    })
-    const proxyBase = `http://127.0.0.1:${started.port}`
-    const claudeProxyToken = `${started.proxyToken}:${launchModelId}`
-    proxyEnv.ANTHROPIC_BASE_URL = proxyBase
-    proxyEnv.ANTHROPIC_AUTH_TOKEN = claudeProxyToken
-
-    const routingReady = await waitForClaudeProxyRouting(started.port, started.proxyToken, launchModelId)
-    if (!routingReady) {
-      console.log(chalk.yellow(`  ⚠ Claude proxy routing reload is taking longer than expected; launching anyway.`))
-      console.log(chalk.dim(`  ${EXPERIMENTAL_PROXY_TOOLS_NOTE}`))
-    }
-
-    if (routingChanged && proxySettings.enabled !== true) {
-      console.log(chalk.dim('  📖 Proxy mode was auto-enabled for Claude Code because this integration is proxy-only.'))
-    }
-    console.log(chalk.dim(`  📖 Claude Code routed through FCM proxy on :${started.port} with proxy-side Claude model mapping`))
-    console.log(chalk.dim(`  📖 Claude itself is forced onto the safe alias: ${CLAUDE_PROXY_CLIENT_MODEL}`))
-    console.log(chalk.dim(`  📖 All Claude families now resolve to: ${model.label} (${launchModelId})`))
-    return spawnCommand('claude', buildClaudeProxyArgs(), proxyEnv)
-  }
-
-  if (mode === 'codex') {
-    const started = await ensureProxyRunning(config)
-    const { env: proxyEnv } = buildToolEnv(mode, model, config, {
-      sanitize: true,
-      includeCompatDefaults: false,
-      includeProviderEnv: false,
-    })
-    const launchModelId = resolveLauncherModelId(model, true)
-    const proxyBaseUrl = `http://127.0.0.1:${started.port}/v1`
-    proxyEnv.FCM_PROXY_API_KEY = started.proxyToken
-    console.log(chalk.dim(`  📖 Codex routed through FCM proxy on :${started.port}`))
-    return spawnCommand('codex', [...buildCodexProxyArgs(proxyBaseUrl), '--model', launchModelId], proxyEnv)
-  }
-
-  if (mode === 'gemini') {
-    const geminiSupport = inspectGeminiCliSupport()
-    if (geminiSupport.configError) {
-      console.log()
-      console.log(chalk.red('  ✖ Gemini CLI configuration is invalid, so the proxy launch is blocked before auth.'))
-      console.log(chalk.dim(`  ${geminiSupport.configError.split('\n').join('\n  ')}`))
-      printExperimentalProxyNote()
-      console.log(chalk.dim('  Fix ~/.gemini/settings.json, then try again.'))
-      console.log()
-      return 1
-    }
-    if (!geminiSupport.supportsProxyBaseUrl) {
-      console.log()
-      const versionLabel = geminiSupport.version ? `v${geminiSupport.version}` : 'this installed version'
-      console.log(chalk.red(`  ✖ Gemini CLI ${versionLabel} is not proxy-compatible in FCM yet.`))
-      console.log(chalk.yellow('  This build does not expose the custom base-URL contract we need, so launching it through the proxy would be misleading.'))
-      printExperimentalProxyNote()
-      console.log(chalk.dim(`  Expected: Gemini CLI ${GEMINI_PROXY_MIN_VERSION}+ with stable proxy base URL support.`))
-      console.log()
-      return 1
-    }
-
-    const started = await ensureProxyRunning(config)
-    const launchModelId = resolveLauncherModelId(model, true)
-    const { env: proxyEnv } = buildToolEnv(mode, model, config, {
-      sanitize: true,
-      includeCompatDefaults: false,
-      includeProviderEnv: false,
-    })
-    proxyEnv.GEMINI_API_KEY = started.proxyToken
-    proxyEnv.GOOGLE_API_KEY = started.proxyToken
-    proxyEnv.GOOGLE_GEMINI_BASE_URL = `http://127.0.0.1:${started.port}/v1`
-    printConfigResult(meta.label, writeGeminiConfig({ ...model, modelId: launchModelId }))
-    console.log(chalk.dim(`  📖 Gemini routed through FCM proxy on :${started.port}`))
-    return spawnCommand('gemini', ['--model', launchModelId], proxyEnv)
   }
 
   if (mode === 'qwen') {
-    printConfigResult(meta.label, writeQwenConfig(model, model.providerKey, apiKey, baseUrl))
-    return spawnCommand('qwen', [], env)
+    const result = writeQwenConfig(model, model.providerKey, apiKey, baseUrl, paths)
+    return {
+      command: 'qwen',
+      args: [],
+      env,
+      apiKey,
+      baseUrl,
+      meta,
+      configArtifacts: [{ path: result.filePath, backupPath: result.backupPath, label: 'config' }],
+    }
   }
 
   if (mode === 'openhands') {
-    // 📖 OpenHands supports LLM_MODEL env var to set the default model
+    const result = writeOpenHandsEnv(model, apiKey, baseUrl, paths)
     env.LLM_MODEL = model.modelId
     env.LLM_API_KEY = apiKey || env.LLM_API_KEY
     if (baseUrl) env.LLM_BASE_URL = baseUrl
-    console.log(chalk.dim(`  📖 OpenHands launched with model: ${model.modelId}`))
-    return spawnCommand('openhands', ['--override-with-envs'], env)
+    return {
+      command: 'openhands',
+      args: ['--override-with-envs'],
+      env,
+      apiKey,
+      baseUrl,
+      meta,
+      configArtifacts: [{ path: result.filePath, backupPath: result.backupPath, label: 'env file' }],
+    }
   }
 
   if (mode === 'amp') {
-    printConfigResult(meta.label, writeAmpConfig(model, baseUrl))
-    console.log(chalk.dim(`  📖 Amp config updated with model: ${model.modelId}`))
-    return spawnCommand('amp', [], env)
+    const result = writeAmpConfig(model, baseUrl, paths)
+    return {
+      command: 'amp',
+      args: [],
+      env,
+      apiKey,
+      baseUrl,
+      meta,
+      configArtifacts: [{ path: result.filePath, backupPath: result.backupPath, label: 'config' }],
+    }
   }
 
   if (mode === 'pi') {
-    const piResult = writePiConfig(model, apiKey, baseUrl)
-    printConfigResult(meta.label, { filePath: piResult.filePath, backupPath: piResult.backupPath })
-    printConfigResult(meta.label, { filePath: piResult.settingsFilePath, backupPath: piResult.settingsBackupPath })
+    const result = writePiConfig(model, apiKey, baseUrl, paths)
+    return {
+      command: 'pi',
+      args: ['--provider', 'freeCodingModels', '--model', model.modelId, '--api-key', apiKey],
+      env,
+      apiKey,
+      baseUrl,
+      meta,
+      configArtifacts: [
+        { path: result.filePath, backupPath: result.backupPath, label: 'models' },
+        { path: result.settingsFilePath, backupPath: result.settingsBackupPath, label: 'settings' },
+      ],
+    }
+  }
+
+  return {
+    blocked: true,
+    exitCode: 1,
+    warnings: [chalk.red(`  X Unsupported external tool mode: ${mode}`)],
+    meta,
+    configArtifacts: [],
+  }
+}
+
+export async function startExternalTool(mode, model, config) {
+  const launchPlan = prepareExternalToolLaunch(mode, model, config)
+  const { meta } = launchPlan
+
+  if (launchPlan.blocked) {
+    for (const warning of launchPlan.warnings || []) console.log(warning)
+    console.log()
+    return launchPlan.exitCode || 1
+  }
+
+  console.log(chalk.cyan(`  ▶ Launching ${meta.label} with ${chalk.bold(model.label)}...`))
+  printConfigArtifacts(meta.label, launchPlan.configArtifacts)
+
+  if (mode === 'aider') {
+    return spawnCommand(launchPlan.command, launchPlan.args, launchPlan.env)
+  }
+
+  if (mode === 'crush') {
+    console.log(chalk.dim('  📖 Crush will use the provider directly for this launch.'))
+    return spawnCommand(launchPlan.command, launchPlan.args, launchPlan.env)
+  }
+
+  if (mode === 'goose') {
+    return spawnCommand(launchPlan.command, launchPlan.args, launchPlan.env)
+  }
+
+  if (mode === 'qwen') {
+    return spawnCommand(launchPlan.command, launchPlan.args, launchPlan.env)
+  }
+
+  if (mode === 'openhands') {
+    console.log(chalk.dim(`  📖 OpenHands launched with model: ${model.modelId}`))
+    return spawnCommand(launchPlan.command, launchPlan.args, launchPlan.env)
+  }
+
+  if (mode === 'amp') {
+    console.log(chalk.dim(`  📖 Amp config updated with model: ${model.modelId}`))
+    return spawnCommand(launchPlan.command, launchPlan.args, launchPlan.env)
+  }
+
+  if (mode === 'pi') {
     // 📖 Pi supports --provider and --model flags for guaranteed auto-selection
-    return spawnCommand('pi', ['--provider', 'freeCodingModels', '--model', model.modelId, '--api-key', apiKey], env)
+    return spawnCommand(launchPlan.command, launchPlan.args, launchPlan.env)
   }
 
   console.log(chalk.red(`  X Unsupported external tool mode: ${mode}`))

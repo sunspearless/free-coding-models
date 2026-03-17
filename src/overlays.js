@@ -4,28 +4,24 @@
  *
  * @details
  *   This module centralizes all overlay rendering in one place:
- *   - Settings, Install Endpoints, Help, Log, Smart Recommend, Feedback, Changelog
- *   - FCM Proxy V2 overlay with current-tool auto-sync toggle and cleanup
+ *   - Settings, Install Endpoints, Help, Smart Recommend, Feedback, Changelog
  *   - Settings diagnostics for provider key tests, including wrapped retry/error details
  *   - Recommend analysis timer orchestration and progress updates
  *
  *   The factory pattern keeps stateful UI logic isolated while still
  *   allowing the main CLI to control shared state and dependencies.
  *
- *   📖 The proxy overlay rows are: Enable → Auto-sync current tool → Port → Cleanup → Install/Restart/Stop/Kill/Logs
  *   📖 Feedback overlay (I key) combines feature requests + bug reports in one left-aligned input
  *
  *   → Functions:
  *   - `createOverlayRenderers` — returns renderer + analysis helpers
  *
  * @exports { createOverlayRenderers }
- * @see ./proxy-sync.js — resolveProxySyncToolMode powers current-tool proxy sync hints
  * @see ./key-handler.js — handles keypresses for all overlay interactions
  */
 
 import { loadChangelog } from './changelog-loader.js'
 import { buildCliHelpLines } from './cli-help.js'
-import { resolveProxySyncToolMode } from './proxy-sync.js'
 
 export function createOverlayRenderers(state, deps) {
   const {
@@ -35,19 +31,16 @@ export function createOverlayRenderers(state, deps) {
     PROVIDER_COLOR,
     LOCAL_VERSION,
     getApiKey,
-    getProxySettings,
     resolveApiKeys,
     isProviderEnabled,
     TIER_CYCLE,
     SETTINGS_OVERLAY_BG,
     HELP_OVERLAY_BG,
     RECOMMEND_OVERLAY_BG,
-    LOG_OVERLAY_BG,
     OVERLAY_PANEL_WIDTH,
     keepOverlayTargetVisible,
     sliceOverlayLines,
     tintOverlayLines,
-    loadRecentLogs,
     TASK_TYPES,
     PRIORITY_TYPES,
     CONTEXT_BUDGETS,
@@ -62,7 +55,6 @@ export function createOverlayRenderers(state, deps) {
     getConfiguredInstallableProviders,
     getInstallTargetModes,
     getProviderCatalogModels,
-    CONNECTION_MODES,
     getToolMeta,
   } = deps
 
@@ -89,54 +81,6 @@ export function createOverlayRenderers(state, deps) {
     return lines
   }
 
-  // 📖 Keep log token formatting aligned with the main table so the same totals
-  // 📖 read the same everywhere in the TUI.
-  const formatLogTokens = (totalTokens) => {
-    const safeTotal = Number(totalTokens) || 0
-    if (safeTotal <= 0) return '--'
-    if (safeTotal >= 999_500) return `${(safeTotal / 1_000_000).toFixed(2)}M`
-    if (safeTotal >= 1_000) return `${(safeTotal / 1_000).toFixed(2)}k`
-    return String(Math.floor(safeTotal))
-  }
-
-  // 📖 Colorize latency with gradient: green (<500ms) → orange (<1000ms) → yellow (<1500ms) → red (>=1500ms)
-  const colorizeLatency = (latency, text) => {
-    const ms = Number(latency) || 0
-    if (ms <= 0) return chalk.dim(text)
-    if (ms < 500) return chalk.greenBright(text)
-    if (ms < 1000) return chalk.rgb(255, 165, 0)(text)  // Orange
-    if (ms < 1500) return chalk.yellow(text)
-    return chalk.red(text)
-  }
-
-  // 📖 Colorize tokens with gradient: dim green (few) → bright green (many)
-  const colorizeTokens = (tokens, text) => {
-    const tok = Number(tokens) || 0
-    if (tok <= 0) return chalk.dim(text)
-    // Gradient: light green (low) → medium green → bright green (high, >30k)
-    if (tok < 10_000) return chalk.hex('#90EE90')(text)  // Light green
-    if (tok < 30_000) return chalk.hex('#32CD32')(text)  // Lime green
-    return chalk.greenBright(text)  // Full brightness green
-  }
-
-  // 📖 Get model color based on status code - distinct colors for each error type
-  const getModelColorByStatus = (status) => {
-    const sc = String(status)
-    if (sc === '200') return chalk.greenBright  // Success - bright green
-    if (sc === '404') return chalk.rgb(139, 0, 0)  // Not found - dark red
-    if (sc === '400') return chalk.hex('#8B008B')  // Bad request - dark magenta
-    if (sc === '401') return chalk.hex('#9932CC')  // Unauthorized - dark orchid
-    if (sc === '403') return chalk.hex('#BA55D3')  // Forbidden - medium orchid
-    if (sc === '413') return chalk.hex('#FF6347')  // Payload too large - tomato red
-    if (sc === '429') return chalk.hex('#FFB90F')  // Rate limit - dark orange
-    if (sc === '500') return chalk.hex('#DC143C')  // Internal server error - crimson
-    if (sc === '502') return chalk.hex('#C71585')  // Bad gateway - medium violet red
-    if (sc === '503') return chalk.hex('#9370DB')  // Service unavailable - medium purple
-    if (sc.startsWith('5')) return chalk.magenta  // Other 5xx - magenta
-    if (sc === '0') return chalk.hex('#696969')  // Timeout/error - dim gray
-    return chalk.white  // Unknown - white
-  }
-
   // ─── Settings screen renderer ─────────────────────────────────────────────
   // 📖 renderSettings: Draw the settings overlay in the alt screen buffer.
   // 📖 Shows all providers with their API key (masked) + enabled state.
@@ -144,11 +88,10 @@ export function createOverlayRenderers(state, deps) {
   // 📖 Key "T" in settings = test API key for selected provider.
   function renderSettings() {
     const providerKeys = Object.keys(sources)
-const updateRowIdx = providerKeys.length
-      const widthWarningRowIdx = updateRowIdx + 1
-      const proxyDaemonRowIdx = widthWarningRowIdx + 1
-      const changelogViewRowIdx = proxyDaemonRowIdx + 1
-    const proxySettings = getProxySettings(state.config)
+    const updateRowIdx = providerKeys.length
+    const widthWarningRowIdx = updateRowIdx + 1
+    const cleanupLegacyProxyRowIdx = widthWarningRowIdx + 1
+    const changelogViewRowIdx = cleanupLegacyProxyRowIdx + 1
     const EL = '\x1b[K'
     const lines = []
     const cursorLineByRow = {}
@@ -285,23 +228,11 @@ const updateRowIdx = providerKeys.length
       lines.push(chalk.red(`      ${state.settingsUpdateError}`))
     }
 
-    // 📖 FCM Proxy V2 — single row that opens a dedicated overlay
-    lines.push('')
-    lines.push(`  ${chalk.bold('📡 FCM Proxy V2')}`)
-    lines.push(`  ${chalk.dim('  ' + '─'.repeat(separatorWidth))}`)
-    lines.push('')
-
-    const proxyDaemonBullet = state.settingsCursor === proxyDaemonRowIdx ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-    const proxyStatus = proxySettings.enabled ? chalk.greenBright('Proxy ON') : chalk.dim('Proxy OFF')
-    const daemonStatus = state.daemonStatus || 'not-installed'
-    let daemonBadge
-    if (daemonStatus === 'running') daemonBadge = chalk.greenBright('Service ON')
-    else if (daemonStatus === 'stopped') daemonBadge = chalk.yellow('Service stopped')
-    else if (daemonStatus === 'stale' || daemonStatus === 'unhealthy') daemonBadge = chalk.red('Service ' + daemonStatus)
-    else daemonBadge = chalk.dim('Service OFF')
-    const proxyDaemonRow = `${proxyDaemonBullet}${chalk.bold('FCM Proxy V2 settings →').padEnd(44)} ${proxyStatus} ${chalk.dim('•')} ${daemonBadge}`
-    cursorLineByRow[proxyDaemonRowIdx] = lines.length
-    lines.push(state.settingsCursor === proxyDaemonRowIdx ? chalk.bgRgb(20, 45, 60)(proxyDaemonRow) : proxyDaemonRow)
+    // 📖 Cleanup row removes stale proxy-era config left behind by older builds.
+    const cleanupLegacyProxyBullet = state.settingsCursor === cleanupLegacyProxyRowIdx ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
+    const cleanupLegacyProxyRow = `${cleanupLegacyProxyBullet}${chalk.bold('Clean Legacy Proxy Config').padEnd(44)} ${chalk.magentaBright('Enter remove discontinued bridge leftovers')}`
+    cursorLineByRow[cleanupLegacyProxyRowIdx] = lines.length
+    lines.push(state.settingsCursor === cleanupLegacyProxyRowIdx ? chalk.bgRgb(55, 25, 55)(cleanupLegacyProxyRow) : cleanupLegacyProxyRow)
 
     // 📖 Changelog viewer row
     const changelogViewBullet = state.settingsCursor === changelogViewRowIdx ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
@@ -314,10 +245,8 @@ const updateRowIdx = providerKeys.length
     lines.push('')
     if (state.settingsEditMode) {
       lines.push(chalk.dim('  Type API key  •  Enter Save  •  Esc Cancel'))
-    } else if (state.settingsProxyPortEditMode) {
-      lines.push(chalk.dim('  Type proxy port (0 = auto)  •  Enter Save  •  Esc Cancel'))
     } else {
-      lines.push(chalk.dim('  ↑↓ Navigate  •  Enter Edit/Run  •  + Add key  •  - Remove key  •  Space Toggle  •  T Test key  •  S Sync→OpenCode  •  R Restore backup  •  U Updates  •  Esc Close'))
+      lines.push(chalk.dim('  ↑↓ Navigate  •  Enter Edit/Run  •  + Add key  •  - Remove key  •  Space Toggle  •  T Test key  •  U Updates  •  Esc Close'))
     }
     // 📖 Show sync/restore status message if set
     if (state.settingsSyncStatus) {
@@ -355,7 +284,7 @@ const updateRowIdx = providerKeys.length
   }
 
   // ─── Install Endpoints overlay renderer ───────────────────────────────────
-  // 📖 renderInstallEndpoints drives the provider → tool → connection → scope → model flow
+  // 📖 renderInstallEndpoints drives the provider → tool → scope → model flow
   // 📖 behind the `Y` hotkey. It deliberately reuses the same overlay viewport
   // 📖 helpers as Settings so long provider/model lists stay navigable.
   function renderInstallEndpoints() {
@@ -364,8 +293,7 @@ const updateRowIdx = providerKeys.length
     const cursorLineByRow = {}
     const providerChoices = getConfiguredInstallableProviders(state.config)
     const toolChoices = getInstallTargetModes()
-    const connectionChoices = CONNECTION_MODES || []
-    const totalSteps = 5
+    const totalSteps = 4
     const scopeChoices = [
       {
         key: 'all',
@@ -391,11 +319,7 @@ const updateRowIdx = providerKeys.length
         })()
       : '—'
 
-    const selectedConnectionLabel = state.installEndpointsConnectionMode === 'proxy'
-      ? 'FCM Proxy V2'
-      : state.installEndpointsConnectionMode === 'direct'
-        ? 'Direct Provider'
-        : '—'
+    const selectedConnectionLabel = 'Direct Provider'
 
     lines.push('')
     // 📖 Branding header
@@ -439,7 +363,7 @@ const updateRowIdx = providerKeys.length
         const label = `${meta.emoji} ${meta.label}`
         const note = toolMode.startsWith('opencode')
           ? chalk.dim('shared config file')
-          : ['claude-code', 'codex', 'openhands'].includes(toolMode)
+          : toolMode === 'openhands'
             ? chalk.dim('env file (~/.fcm-*-env)')
             : chalk.dim('managed config install')
         const bullet = isCursor ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
@@ -450,26 +374,8 @@ const updateRowIdx = providerKeys.length
 
       lines.push('')
       lines.push(chalk.dim('  ↑↓ Navigate  •  Enter Choose tool  •  Esc Back'))
-    } else if (state.installEndpointsPhase === 'connection') {
-      // 📖 Step 3: Choose connection mode — Direct Provider vs FCM Proxy
-      lines.push(`  ${chalk.bold(`Step 3/${totalSteps}`)}  ${chalk.cyan('Choose connection mode')}`)
-      lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}  •  Tool: ${selectedToolLabel}`))
-      lines.push('')
-
-      connectionChoices.forEach((mode, idx) => {
-        const isCursor = idx === state.installEndpointsCursor
-        const bullet = isCursor ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-        const icon = mode.key === 'proxy' ? '🔄' : '⚡'
-        const row = `${bullet}${icon} ${chalk.bold(mode.label)}`
-        cursorLineByRow[idx] = lines.length
-        lines.push(isCursor ? chalk.bgRgb(24, 44, 62)(row) : row)
-        lines.push(chalk.dim(`      ${mode.hint}`))
-        lines.push('')
-      })
-
-      lines.push(chalk.dim('  Enter Continue  •  Esc Back'))
     } else if (state.installEndpointsPhase === 'scope') {
-      lines.push(`  ${chalk.bold(`Step 4/${totalSteps}`)}  ${chalk.cyan('Choose the install scope')}`)
+      lines.push(`  ${chalk.bold(`Step 3/${totalSteps}`)}  ${chalk.cyan('Choose the install scope')}`)
       lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}  •  Tool: ${selectedToolLabel}  •  ${selectedConnectionLabel}`))
       lines.push('')
 
@@ -488,7 +394,7 @@ const updateRowIdx = providerKeys.length
       const models = getProviderCatalogModels(state.installEndpointsProviderKey)
       const selectedCount = state.installEndpointsSelectedModelIds.size
 
-      lines.push(`  ${chalk.bold(`Step 5/${totalSteps}`)}  ${chalk.cyan('Choose which models to install')}`)
+      lines.push(`  ${chalk.bold(`Step 4/${totalSteps}`)}  ${chalk.cyan('Choose which models to install')}`)
       lines.push(chalk.dim(`  Provider: ${selectedProviderLabel}  •  Tool: ${selectedToolLabel}  •  ${selectedConnectionLabel}`))
       lines.push(chalk.dim(`  Selected: ${selectedCount}/${models.length}`))
       lines.push('')
@@ -590,8 +496,8 @@ const updateRowIdx = providerKeys.length
     lines.push(`  ${chalk.cyan('Up%')}         Uptime — ratio of successful pings to total pings  ${chalk.dim('Sort:')} ${chalk.yellow('U')}`)
     lines.push(`              ${chalk.dim('If a model only works half the time, you\'ll waste time retrying. Higher = more reliable.')}`)
     lines.push('')
-    lines.push(`  ${chalk.cyan('Used')}        Total prompt+completion tokens consumed in logs for this exact provider/model pair`)
-    lines.push(`              ${chalk.dim('Loaded once at startup from request-log.jsonl. Displayed in K tokens, or M tokens above one million.')}`)
+    lines.push(`  ${chalk.cyan('Used')}        Historical prompt+completion tokens tracked for this exact provider/model pair`)
+    lines.push(`              ${chalk.dim('Loaded from local stats snapshots. Displayed in K tokens, or M tokens above one million.')}`)
     lines.push('')
 
 
@@ -604,14 +510,12 @@ const updateRowIdx = providerKeys.length
     lines.push(`  ${chalk.bold('Controls')}`)
     lines.push(`  ${chalk.yellow('W')}  Toggle ping mode  ${chalk.dim('(speed 2s → normal 10s → slow 30s → forced 4s)')}`)
     lines.push(`  ${chalk.yellow('E')}  Toggle configured models only  ${chalk.dim('(enabled by default)')}`)
-    lines.push(`  ${chalk.yellow('X')}  Toggle token log page  ${chalk.dim('(shows recent request usage from request-log.jsonl)')}`)
-    lines.push(`  ${chalk.yellow('Z')}  Cycle tool mode  ${chalk.dim('(OpenCode → Desktop → OpenClaw → Crush → Goose → Pi → Aider → Claude Code → Codex → Gemini → Qwen → OpenHands → Amp)')}`)
+    lines.push(`  ${chalk.yellow('Z')}  Cycle tool mode  ${chalk.dim('(OpenCode → Desktop → OpenClaw → Crush → Goose → Pi → Aider → Qwen → OpenHands → Amp)')}`)
     lines.push(`  ${chalk.yellow('F')}  Toggle favorite on selected row  ${chalk.dim('(⭐ pinned at top, persisted)')}`)
-    lines.push(`  ${chalk.yellow('Y')}  Install endpoints  ${chalk.dim('(provider catalog → compatible tools, Direct or FCM Proxy V2)')}`)
+    lines.push(`  ${chalk.yellow('Y')}  Install endpoints  ${chalk.dim('(provider catalog → compatible tools, direct provider only)')}`)
     lines.push(`  ${chalk.yellow('Q')}  Smart Recommend  ${chalk.dim('(🎯 find the best model for your task — questionnaire + live analysis)')}`)
     lines.push(`  ${chalk.rgb(255, 87, 51).bold('I')}  Feedback, bugs & requests  ${chalk.dim('(📝 send anonymous feedback, bug reports, or feature requests)')}`)
-    lines.push(`  ${chalk.yellow('J')}  FCM Proxy V2 settings  ${chalk.dim('(📡 open proxy configuration and background service management)')}`)
-    lines.push(`  ${chalk.yellow('P')}  Open settings  ${chalk.dim('(manage API keys, provider toggles, proxy, manual update)')}`)
+    lines.push(`  ${chalk.yellow('P')}  Open settings  ${chalk.dim('(manage API keys, provider toggles, updates, legacy cleanup)')}`)
       // 📖 Profile system removed - API keys now persist permanently across all sessions
     lines.push(`  ${chalk.yellow('Shift+R')}  Reset view settings  ${chalk.dim('(tier filter, sort, provider filter → defaults)')}`)
     lines.push(`  ${chalk.yellow('N')}  Changelog  ${chalk.dim('(📋 browse all versions, Enter to view details)')}`)
@@ -622,7 +526,7 @@ const updateRowIdx = providerKeys.length
     lines.push(`  ${chalk.yellow('↑↓')}           Navigate rows`)
     lines.push(`  ${chalk.yellow('PgUp/PgDn')}    Jump by page`)
     lines.push(`  ${chalk.yellow('Home/End')}     Jump first/last row`)
-    lines.push(`  ${chalk.yellow('Enter')}        Edit key / check-install update`)
+    lines.push(`  ${chalk.yellow('Enter')}        Edit key / run selected maintenance action`)
     lines.push(`  ${chalk.yellow('Space')}        Toggle provider enable/disable`)
     lines.push(`  ${chalk.yellow('T')}            Test selected provider key`)
     lines.push(`  ${chalk.yellow('U')}            Check updates manually`)
@@ -634,173 +538,6 @@ const updateRowIdx = providerKeys.length
     const { visible, offset } = sliceOverlayLines(lines, state.helpScrollOffset, state.terminalRows)
     state.helpScrollOffset = offset
     const tintedLines = tintOverlayLines(visible, HELP_OVERLAY_BG, state.terminalCols)
-    const cleared = tintedLines.map(l => l + EL)
-    return cleared.join('\n')
-  }
-
-  // ─── Log page overlay renderer ────────────────────────────────────────────
-  // 📖 renderLog: Draw the log page overlay showing recent requests from
-  // 📖 ~/.free-coding-models/request-log.jsonl, newest-first.
-  // 📖 Toggled with X key. Esc or X closes.
-  function renderLog() {
-    const EL = '\x1b[K'
-    const lines = []
-
-    // 📖 Branding header
-    lines.push(`  ${chalk.cyanBright('🚀')} ${chalk.bold.cyanBright('free-coding-models')} ${chalk.dim(`v${LOCAL_VERSION}`)}`)
-    lines.push(`  ${chalk.bold('📋 Request Log')}`)
-    lines.push('')
-    lines.push(chalk.dim('  — recent requests • ↑↓ scroll • A toggle all/500 • X or Esc close'))
-    lines.push(chalk.dim('  Works only when the multi-account proxy is enabled and requests go through it.'))
-    lines.push(chalk.dim('  Direct provider launches do not currently write into this log.'))
-
-    // 📖 Load recent log entries — bounded read, newest-first, malformed lines skipped.
-    // 📖 Show up to 500 entries by default, or all if logShowAll is true.
-    const logLimit = state.logShowAll ? Number.MAX_SAFE_INTEGER : 500
-    const logRows = loadRecentLogs({ limit: logLimit })
-    const totalTokens = logRows.reduce((sum, row) => sum + (Number(row.tokens) || 0), 0)
-
-    if (logRows.length === 0) {
-      lines.push(chalk.dim('  No log entries found.'))
-      lines.push(chalk.dim('  Logs are written to ~/.free-coding-models/request-log.jsonl'))
-      lines.push(chalk.dim('  when requests are proxied through the multi-account rotation proxy.'))
-      lines.push(chalk.dim('  Direct provider launches do not currently feed this token log.'))
-    } else {
-      lines.push(`  ${chalk.bold('Total Consumed:')} ${chalk.greenBright(formatLogTokens(totalTokens))}`)
-      lines.push('')
-      // 📖 Column widths for the log table
-      const W_TIME    = 19
-      const W_PROV    = 14
-      const W_MODEL   = 44
-      const W_ROUTE   = 18
-      const W_STATUS  = 8
-      const W_TOKENS  = 12
-      const W_LAT     = 10
-
-      // 📖 Header row
-      const hTime   = chalk.dim('Time'.padEnd(W_TIME))
-      const hProv   = chalk.dim('Provider'.padEnd(W_PROV))
-      const hModel  = chalk.dim('Model'.padEnd(W_MODEL))
-      const hRoute  = chalk.dim('Route'.padEnd(W_ROUTE))
-      const hStatus = chalk.dim('Status'.padEnd(W_STATUS))
-      const hTok    = chalk.dim('Tokens Used'.padEnd(W_TOKENS))
-      const hLat    = chalk.dim('Latency'.padEnd(W_LAT))
-
-      // 📖 Show mode indicator (all vs limited)
-      const modeBadge = state.logShowAll
-        ? chalk.yellow.bold('ALL')
-        : chalk.cyan.bold('500')
-      const countBadge = chalk.dim(`Showing ${logRows.length} entries`)
-
-      lines.push(`  ${hTime}  ${hProv}  ${hModel}  ${hRoute}  ${hStatus}  ${hTok}  ${hLat}`)
-      lines.push(`  ${chalk.dim('─'.repeat(W_TIME + W_PROV + W_MODEL + W_ROUTE + W_STATUS + W_TOKENS + W_LAT + 12))}  ${modeBadge}  ${countBadge}`)
-
-      for (const row of logRows) {
-        // 📖 Format time as HH:MM:SS (strip the date part for compactness)
-        let timeStr = row.time
-        try {
-          const d = new Date(row.time)
-          if (!Number.isNaN(d.getTime())) {
-            timeStr = d.toISOString().replace('T', ' ').slice(0, 19)
-          }
-        } catch { /* keep raw */ }
-
-        const requestedModelLabel = row.requestedModel || ''
-        // 📖 Always show "requested → actual" if they differ, not just when switched
-        const displayModel = requestedModelLabel && requestedModelLabel !== row.model
-          ? `${requestedModelLabel} → ${row.model}`
-          : row.model
-
-        // 📖 Color-code status with distinct colors for each error type
-        let statusCell
-        const sc = String(row.status)
-        if (sc === '200') {
-          statusCell = chalk.greenBright(sc.padEnd(W_STATUS))
-        } else if (sc === '404') {
-          statusCell = chalk.rgb(139, 0, 0).bold(sc.padEnd(W_STATUS))  // Dark red for 404
-        } else if (sc === '400') {
-          statusCell = chalk.hex('#8B008B').bold(sc.padEnd(W_STATUS))  // Dark magenta
-        } else if (sc === '401') {
-          statusCell = chalk.hex('#9932CC').bold(sc.padEnd(W_STATUS))  // Dark orchid
-        } else if (sc === '403') {
-          statusCell = chalk.hex('#BA55D3').bold(sc.padEnd(W_STATUS))  // Medium orchid
-        } else if (sc === '413') {
-          statusCell = chalk.hex('#FF6347').bold(sc.padEnd(W_STATUS))  // Tomato red
-        } else if (sc === '429') {
-          statusCell = chalk.hex('#FFB90F').bold(sc.padEnd(W_STATUS))  // Dark orange
-        } else if (sc === '500') {
-          statusCell = chalk.hex('#DC143C').bold(sc.padEnd(W_STATUS))  // Crimson
-        } else if (sc === '502') {
-          statusCell = chalk.hex('#C71585').bold(sc.padEnd(W_STATUS))  // Medium violet red
-        } else if (sc === '503') {
-          statusCell = chalk.hex('#9370DB').bold(sc.padEnd(W_STATUS))  // Medium purple
-        } else if (sc.startsWith('5')) {
-          statusCell = chalk.magenta(sc.padEnd(W_STATUS))  // Other 5xx - magenta
-        } else if (sc === '0') {
-          statusCell = chalk.hex('#696969')(sc.padEnd(W_STATUS))  // Dim gray for timeout
-        } else {
-          statusCell = chalk.dim(sc.padEnd(W_STATUS))
-        }
-
-        const tokStr = formatLogTokens(row.tokens)
-        const latStr = row.latency > 0 ? `${row.latency}ms` : '--'
-        const routeLabel = row.switched
-          ? `SWITCHED ↻ ${row.switchReason || 'fallback'}`
-          : 'direct'
-
-        // 📖 Detect failed requests with zero tokens - these get special red highlighting
-        const isFailedWithZeroTokens = row.status !== '200' && (!row.tokens || Number(row.tokens) === 0)
-
-        const timeCell  = chalk.dim(timeStr.slice(0, W_TIME).padEnd(W_TIME))
-        // 📖 Provider display: Use pretty label if available, otherwise raw key.
-        // 📖 All these logs are from FCM Proxy V2.
-        const providerLabel = PROVIDER_METADATA[row.provider]?.label || row.provider
-        const providerRgb = PROVIDER_COLOR[row.provider] ?? [105, 190, 245]
-        const provCell  = chalk.bold.rgb(...providerRgb)(providerLabel.slice(0, W_PROV).padEnd(W_PROV))
-
-        // 📖 Color model based on status - red for failed requests with zero tokens
-        let modelCell
-        if (isFailedWithZeroTokens) {
-          modelCell = chalk.red.bold(displayModel.slice(0, W_MODEL).padEnd(W_MODEL))
-        } else {
-          const modelColorFn = getModelColorByStatus(row.status)
-          modelCell = row.switched
-            ? chalk.bold.rgb(255, 210, 90)(displayModel.slice(0, W_MODEL).padEnd(W_MODEL))
-            : modelColorFn(displayModel.slice(0, W_MODEL).padEnd(W_MODEL))
-        }
-
-        const routeCell = row.switched
-          ? chalk.bgRgb(120, 25, 25).yellow.bold(` ${routeLabel.slice(0, W_ROUTE - 2).padEnd(W_ROUTE - 2)} `)
-          : chalk.dim(routeLabel.padEnd(W_ROUTE))
-
-        // 📖 Colorize tokens - red cross emoji for failed requests with zero tokens
-        let tokCell
-        if (isFailedWithZeroTokens) {
-          tokCell = chalk.red.bold('✗'.padEnd(W_TOKENS))
-        } else {
-          tokCell = colorizeTokens(row.tokens, tokStr.padEnd(W_TOKENS))
-        }
-
-        // 📖 Colorize latency with gradient (green → orange → yellow → red)
-        const latCell = colorizeLatency(row.latency, latStr.padEnd(W_LAT))
-
-        // 📖 Build the row line - add dark red background for failed requests with zero tokens
-        const rowText = `  ${timeCell}  ${provCell}  ${modelCell}  ${routeCell}  ${statusCell}  ${tokCell}  ${latCell}`
-        if (isFailedWithZeroTokens) {
-          lines.push(chalk.bgRgb(40, 0, 0)(rowText))
-        } else {
-          lines.push(rowText)
-        }
-      }
-    }
-
-    lines.push('')
-    lines.push(chalk.dim(`  Showing up to 200 most recent entries  •  X or Esc close`))
-    lines.push('')
-
-    const { visible, offset } = sliceOverlayLines(lines, state.logScrollOffset, state.terminalRows)
-    state.logScrollOffset = offset
-    const tintedLines = tintOverlayLines(visible, LOG_OVERLAY_BG, state.terminalCols)
     const cleared = tintedLines.map(l => l + EL)
     return cleared.join('\n')
   }
@@ -1219,235 +956,6 @@ const updateRowIdx = providerKeys.length
     return cleared.join('\n')
   }
 
-  // ─── FCM Proxy V2 overlay renderer ──────────────────────────────────────────
-  // 📖 renderProxyDaemon: Dedicated full-page overlay for FCM Proxy V2 configuration
-  // 📖 and background service management. Opened from Settings → "FCM Proxy V2 settings →".
-  // 📖 Contains all proxy toggles, service status/actions, explanations, and emergency kill.
-  function renderProxyDaemon() {
-    const EL = '\x1b[K'
-    const lines = []
-    const cursorLineByRow = {}
-    const proxySettings = getProxySettings(state.config)
-
-    // 📖 Row indices — these control cursor navigation
-    const ROW_PROXY_ENABLED = 0
-    const ROW_PROXY_SYNC = 1
-    const ROW_PROXY_PORT = 2
-    const ROW_PROXY_CLEANUP = 3
-    const ROW_DAEMON_INSTALL = 4
-    const ROW_DAEMON_RESTART = 5
-    const ROW_DAEMON_STOP = 6
-    const ROW_DAEMON_KILL = 7
-    const ROW_DAEMON_LOGS = 8
-
-    const daemonStatus = state.daemonStatus || 'not-installed'
-    const daemonInfo = state.daemonInfo
-    const daemonIsActive = daemonStatus === 'running' || daemonStatus === 'unhealthy' || daemonStatus === 'stale'
-    const daemonIsInstalled = daemonIsActive || daemonStatus === 'stopped'
-
-    // 📖 Compute max row — hide daemon action rows when daemon not installed
-    let maxRow = ROW_DAEMON_INSTALL
-    if (daemonIsInstalled) maxRow = ROW_DAEMON_LOGS
-
-    // 📖 Header
-    lines.push(`  ${chalk.cyanBright('🚀')} ${chalk.bold.cyanBright('free-coding-models')} ${chalk.dim(`v${LOCAL_VERSION}`)}`)
-    lines.push(`  ${chalk.bold('📡 FCM Proxy V2 Manager')}`)
-    lines.push(`  ${chalk.dim('— Esc back to Settings • ↑↓ navigate • Enter select')}`)
-    lines.push('')
-    lines.push(`  ${chalk.bgRed.white.bold(' ⚠ EXPERIMENTAL ')} ${chalk.red('This feature is under active development and may not work as expected.')}`)
-    lines.push(`  ${chalk.red('Found a bug? Press')} ${chalk.bold.white('I')} ${chalk.red('on the main screen or join our Discord to report issues & suggest improvements.')}`)
-    lines.push('')
-
-    // 📖 Feedback message (auto-clears after 5s)
-    const msg = state.proxyDaemonMessage
-    if (msg && (Date.now() - msg.ts < 5000)) {
-      const msgColor = msg.type === 'success' ? chalk.greenBright : msg.type === 'warning' ? chalk.yellow : chalk.red
-      lines.push(`  ${msgColor(msg.msg)}`)
-      lines.push('')
-    }
-
-    // ────────────────────────────── PROXY SECTION ──────────────────────────────
-    lines.push(`  ${chalk.bold('🔀 Proxy Configuration')}`)
-    lines.push(`  ${chalk.dim('  ─────────────────────────────────────────────')}`)
-    lines.push('')
-    lines.push(`  ${chalk.dim('  The local proxy groups all your provider API keys into a single')}`)
-    lines.push(`  ${chalk.dim('  endpoint. Tools like OpenCode, Claude Code, Goose, etc. connect')}`)
-    lines.push(`  ${chalk.dim('  to this proxy which handles key rotation, rate limiting, and failover.')}`)
-    lines.push('')
-
-    // 📖 Proxy sync now always follows the currently selected Z-mode when supported.
-    const currentToolMode = state.mode || 'opencode'
-    const currentToolMeta = getToolMeta(currentToolMode)
-    const currentToolLabel = `${currentToolMeta.emoji} ${currentToolMeta.label}`
-    const proxySyncTool = resolveProxySyncToolMode(currentToolMode)
-    const proxySyncHint = proxySyncTool
-      ? chalk.dim(`  Current tool: ${currentToolLabel}`)
-      : chalk.yellow(`  Current tool: ${currentToolLabel} (launcher-only, no persisted proxy config)`)
-    lines.push(proxySyncHint)
-    lines.push('')
-
-    // 📖 Row 0: Proxy enabled toggle
-    const r0b = state.proxyDaemonCursor === ROW_PROXY_ENABLED ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-    const r0val = proxySettings.enabled ? chalk.greenBright('Enabled') : chalk.dim('Disabled (opt-in)')
-    const r0 = `${r0b}${chalk.bold('Proxy mode').padEnd(44)} ${r0val}`
-    cursorLineByRow[ROW_PROXY_ENABLED] = lines.length
-    lines.push(state.proxyDaemonCursor === ROW_PROXY_ENABLED ? chalk.bgRgb(20, 45, 60)(r0) : r0)
-
-    // 📖 Row 1: Auto-sync proxy config to the current tool when that tool supports persisted sync.
-    const r2b = state.proxyDaemonCursor === ROW_PROXY_SYNC ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-    const r2val = proxySettings.syncToOpenCode ? chalk.greenBright('Enabled') : chalk.dim('Disabled')
-    const r2label = proxySyncTool
-      ? `Auto-sync proxy to ${currentToolMeta.label}`
-      : 'Auto-sync proxy to current tool'
-    const r2note = proxySyncTool ? '' : ` ${chalk.dim('(unavailable for this mode)')}`
-    const r2 = `${r2b}${chalk.bold(r2label).padEnd(44)} ${r2val}${r2note}`
-    cursorLineByRow[ROW_PROXY_SYNC] = lines.length
-    lines.push(state.proxyDaemonCursor === ROW_PROXY_SYNC ? chalk.bgRgb(20, 45, 60)(r2) : r2)
-
-    // 📖 Row 2: Preferred port
-    const r3b = state.proxyDaemonCursor === ROW_PROXY_PORT ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-    const r3val = state.settingsProxyPortEditMode && state.proxyDaemonCursor === ROW_PROXY_PORT
-      ? chalk.cyanBright(`${state.settingsProxyPortBuffer}▏`)
-      : (proxySettings.preferredPort === 0 ? chalk.dim('auto (OS-assigned)') : chalk.green(String(proxySettings.preferredPort)))
-    const r3 = `${r3b}${chalk.bold('Preferred proxy port').padEnd(44)} ${r3val}`
-    cursorLineByRow[ROW_PROXY_PORT] = lines.length
-    lines.push(state.proxyDaemonCursor === ROW_PROXY_PORT ? chalk.bgRgb(20, 45, 60)(r3) : r3)
-
-    // 📖 Row 3: Clean current tool proxy config
-    const r4b = state.proxyDaemonCursor === ROW_PROXY_CLEANUP ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-    const r4title = proxySyncTool
-      ? `Clean ${currentToolMeta.label} proxy config`
-      : `Clean ${currentToolMeta.label} proxy config`
-    const r4hint = proxySyncTool
-      ? chalk.dim('Enter → removes all fcm-* entries')
-      : chalk.dim('Unavailable for this mode')
-    const r4 = `${r4b}${chalk.bold(r4title).padEnd(44)} ${r4hint}`
-    cursorLineByRow[ROW_PROXY_CLEANUP] = lines.length
-    lines.push(state.proxyDaemonCursor === ROW_PROXY_CLEANUP ? chalk.bgRgb(45, 30, 30)(r4) : r4)
-
-    // ────────────────────────────── DAEMON SECTION ─────────────────────────────
-    lines.push('')
-    lines.push(`  ${chalk.bold('📡 FCM Proxy V2 Background Service')}`)
-    lines.push(`  ${chalk.dim('  ─────────────────────────────────────────────')}`)
-    lines.push('')
-    lines.push(`  ${chalk.dim('  The background service keeps FCM Proxy V2 running 24/7 — even when')}`)
-    lines.push(`  ${chalk.dim('  the TUI is closed or after a reboot. Claude Code, Gemini CLI, and')}`)
-    lines.push(`  ${chalk.dim('  all tools stay connected at all times.')}`)
-    lines.push('')
-
-    // 📖 Status display
-    let daemonStatusLine = `  ${chalk.bold('  Status:')} `
-    if (daemonStatus === 'running') {
-      daemonStatusLine += chalk.greenBright('● Running')
-      if (daemonInfo) daemonStatusLine += chalk.dim(` — PID ${daemonInfo.pid} • Port ${daemonInfo.port} • ${daemonInfo.accountCount || '?'} accounts • ${daemonInfo.modelCount || '?'} models`)
-    } else if (daemonStatus === 'stopped') {
-      daemonStatusLine += chalk.yellow('○ Stopped') + chalk.dim(' — service installed but not running')
-    } else if (daemonStatus === 'stale') {
-      daemonStatusLine += chalk.red('⚠ Stale') + chalk.dim(' — service crashed, PID no longer alive')
-    } else if (daemonStatus === 'unhealthy') {
-      daemonStatusLine += chalk.red('⚠ Unhealthy') + chalk.dim(' — PID alive but health check failed')
-    } else {
-      daemonStatusLine += chalk.dim('○ Not installed')
-    }
-    lines.push(daemonStatusLine)
-
-    // 📖 Version mismatch warning
-    if (daemonInfo?.version && daemonInfo.version !== LOCAL_VERSION) {
-      lines.push(`  ${chalk.yellow(`  ⚠ Version mismatch: service v${daemonInfo.version} vs FCM v${LOCAL_VERSION}`)}`)
-      lines.push(`  ${chalk.dim('    Restart or reinstall the service to apply the update.')}`)
-    }
-
-    // 📖 Uptime
-    if (daemonStatus === 'running' && daemonInfo?.startedAt) {
-      const upSec = Math.floor((Date.now() - new Date(daemonInfo.startedAt).getTime()) / 1000)
-      const upMin = Math.floor(upSec / 60)
-      const upHr = Math.floor(upMin / 60)
-      const uptimeStr = upHr > 0 ? `${upHr}h ${upMin % 60}m` : upMin > 0 ? `${upMin}m ${upSec % 60}s` : `${upSec}s`
-      lines.push(`  ${chalk.dim(`  Uptime: ${uptimeStr}`)}`)
-    }
-
-    lines.push('')
-
-    // 📖 Row 5: Install / Uninstall
-    const d0b = state.proxyDaemonCursor === ROW_DAEMON_INSTALL ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-    const d0label = daemonIsInstalled ? 'Uninstall service' : 'Install background service'
-    const d0hint = daemonIsInstalled
-      ? chalk.dim('Enter → stop service + remove config')
-      : chalk.dim('Enter → install as OS service (launchd/systemd)')
-    const d0 = `${d0b}${chalk.bold(d0label).padEnd(44)} ${d0hint}`
-    cursorLineByRow[ROW_DAEMON_INSTALL] = lines.length
-    lines.push(state.proxyDaemonCursor === ROW_DAEMON_INSTALL ? chalk.bgRgb(daemonIsInstalled ? 45 : 20, daemonIsInstalled ? 30 : 45, daemonIsInstalled ? 30 : 40)(d0) : d0)
-
-    // 📖 Rows 6-9 only shown when service is installed
-    if (daemonIsInstalled) {
-      // 📖 Row 6: Restart
-      const d1b = state.proxyDaemonCursor === ROW_DAEMON_RESTART ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-      const d1 = `${d1b}${chalk.bold('Restart service').padEnd(44)} ${chalk.dim('Enter → stop + start via OS service manager')}`
-      cursorLineByRow[ROW_DAEMON_RESTART] = lines.length
-      lines.push(state.proxyDaemonCursor === ROW_DAEMON_RESTART ? chalk.bgRgb(20, 45, 60)(d1) : d1)
-
-      // 📖 Row 7: Stop (SIGTERM)
-      const d2b = state.proxyDaemonCursor === ROW_DAEMON_STOP ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-      const d2warn = chalk.dim(' (service may auto-restart)')
-      const d2 = `${d2b}${chalk.bold('Stop service').padEnd(44)} ${chalk.dim('Enter → graceful shutdown (SIGTERM)')}${d2warn}`
-      cursorLineByRow[ROW_DAEMON_STOP] = lines.length
-      lines.push(state.proxyDaemonCursor === ROW_DAEMON_STOP ? chalk.bgRgb(45, 40, 20)(d2) : d2)
-
-      // 📖 Row 8: Force kill (SIGKILL) — emergency
-      const d3b = state.proxyDaemonCursor === ROW_DAEMON_KILL ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-      const d3 = `${d3b}${chalk.bold.red('Force kill service').padEnd(44)} ${chalk.dim('Enter → SIGKILL — emergency only')}`
-      cursorLineByRow[ROW_DAEMON_KILL] = lines.length
-      lines.push(state.proxyDaemonCursor === ROW_DAEMON_KILL ? chalk.bgRgb(60, 20, 20)(d3) : d3)
-
-      // 📖 Row 9: View logs
-      const d4b = state.proxyDaemonCursor === ROW_DAEMON_LOGS ? chalk.bold.cyan('  ❯ ') : chalk.dim('    ')
-      const d4 = `${d4b}${chalk.bold('View service logs').padEnd(44)} ${chalk.dim('Enter → show last 50 log lines')}`
-      cursorLineByRow[ROW_DAEMON_LOGS] = lines.length
-      lines.push(state.proxyDaemonCursor === ROW_DAEMON_LOGS ? chalk.bgRgb(30, 30, 50)(d4) : d4)
-    }
-
-    // ────────────────────────────── INFO SECTION ───────────────────────────────
-    lines.push('')
-    lines.push(`  ${chalk.bold('ℹ  How it works')}`)
-    lines.push(`  ${chalk.dim('  ─────────────────────────────────────────────')}`)
-    lines.push('')
-    lines.push(`  ${chalk.dim('  📖 The proxy starts a local HTTP server on 127.0.0.1 (localhost only).')}`)
-    lines.push(`  ${chalk.dim('  📖 External tools connect to it as if it were OpenAI/Anthropic.')}`)
-    lines.push(`  ${chalk.dim('  📖 The proxy rotates between your API keys across all providers.')}`)
-    lines.push('')
-    lines.push(`  ${chalk.dim('  📖 The background service adds persistence: install it once, and the proxy')}`)
-    lines.push(`  ${chalk.dim('  📖 starts automatically at login and survives reboots.')}`)
-    lines.push('')
-    lines.push(`  ${chalk.dim('  📖 Claude Code support: FCM Proxy V2 translates Anthropic wire format')}`)
-    lines.push(`  ${chalk.dim('  📖 (POST /v1/messages) to OpenAI format for upstream providers.')}`)
-    lines.push('')
-    if (process.platform === 'darwin') {
-      lines.push(`  ${chalk.dim('  📦 macOS: launchd LaunchAgent at ~/Library/LaunchAgents/com.fcm.proxy.plist')}`)
-    } else if (process.platform === 'linux') {
-      lines.push(`  ${chalk.dim('  📦 Linux: systemd user service at ~/.config/systemd/user/fcm-proxy.service')}`)
-    } else {
-      lines.push(`  ${chalk.dim('  ⚠ Windows: background service not supported — use in-process proxy (starts with TUI)')}`)
-    }
-    lines.push('')
-
-    // 📖 Clamp cursor
-    if (state.proxyDaemonCursor > maxRow) state.proxyDaemonCursor = maxRow
-
-    // 📖 Scrolling and tinting
-    const PROXY_DAEMON_BG = chalk.bgRgb(15, 25, 45)
-    const targetLine = cursorLineByRow[state.proxyDaemonCursor] ?? 0
-    state.proxyDaemonScrollOffset = keepOverlayTargetVisible(
-      state.proxyDaemonScrollOffset,
-      targetLine,
-      lines.length,
-      state.terminalRows
-    )
-    const { visible, offset } = sliceOverlayLines(lines, state.proxyDaemonScrollOffset, state.terminalRows)
-    state.proxyDaemonScrollOffset = offset
-    const tintedLines = tintOverlayLines(visible, PROXY_DAEMON_BG, state.terminalCols)
-    return tintedLines.map(l => l + EL).join('\n')
-  }
-
   // 📖 stopRecommendAnalysis: cleanup timers if user cancels during analysis
   function stopRecommendAnalysis() {
     if (state.recommendAnalysisTimer) { clearInterval(state.recommendAnalysisTimer); state.recommendAnalysisTimer = null }
@@ -1456,10 +964,8 @@ const updateRowIdx = providerKeys.length
 
   return {
     renderSettings,
-    renderProxyDaemon,
     renderInstallEndpoints,
     renderHelp,
-    renderLog,
     renderRecommend,
     renderFeedback,
     renderChangelog,

@@ -18,13 +18,14 @@
  *   → `hasConfiguredKey` — decide whether a config entry really contains an API key
  *   → `createTestfcmRunId` — build a stable timestamp-based run id for artifacts
  *   → `extractJsonPayload` — recover JSON mode output even when logs prefix stdout
+ *   → `pickTestfcmSelectionIndex` — pick the most promising preflight row before sending Enter
  *   → `detectTranscriptFindings` — map raw tool output to actionable failure findings
  *   → `classifyToolTranscript` — classify a run as passed, failed, or inconclusive
  *   → `buildFixTasks` — convert findings into concrete follow-up work items
  *   → `buildTestfcmReport` — render the final Markdown report written under `task/`
  *
  * @exports TESTFCM_TOOL_SPECS, normalizeTestfcmToolName, resolveTestfcmToolSpec
- * @exports hasConfiguredKey, createTestfcmRunId, extractJsonPayload
+ * @exports hasConfiguredKey, createTestfcmRunId, extractJsonPayload, pickTestfcmSelectionIndex
  * @exports detectTranscriptFindings, classifyToolTranscript, buildFixTasks
  * @exports buildTestfcmReport
  */
@@ -35,39 +36,15 @@ export const TESTFCM_TOOL_SPECS = {
     label: 'Crush',
     command: 'crush',
     flag: '--crush',
-    prefersProxy: true,
+    prefersProxy: false,
     configPaths: ['.config/crush/crush.json'],
-  },
-  codex: {
-    mode: 'codex',
-    label: 'Codex CLI',
-    command: 'codex',
-    flag: '--codex',
-    prefersProxy: true,
-    configPaths: [],
-  },
-  'claude-code': {
-    mode: 'claude-code',
-    label: 'Claude Code',
-    command: 'claude',
-    flag: '--claude-code',
-    prefersProxy: true,
-    configPaths: [],
-  },
-  gemini: {
-    mode: 'gemini',
-    label: 'Gemini CLI',
-    command: 'gemini',
-    flag: '--gemini',
-    prefersProxy: true,
-    configPaths: ['.gemini/settings.json'],
   },
   goose: {
     mode: 'goose',
     label: 'Goose',
     command: 'goose',
     flag: '--goose',
-    prefersProxy: true,
+    prefersProxy: false,
     configPaths: ['.config/goose/config.yaml'],
   },
   aider: {
@@ -121,13 +98,17 @@ export const TESTFCM_TOOL_SPECS = {
 }
 
 const TESTFCM_TOOL_ALIASES = {
-  claude: 'claude-code',
-  claudecode: 'claude-code',
-  codexcli: 'codex',
   opencodecli: 'opencode',
 }
 
 const TRANSCRIPT_FINDING_RULES = [
+  {
+    id: 'terminal_too_small',
+    title: 'PTY width warning blocked the TUI flow',
+    severity: 'high',
+    regex: /please maximize your terminal|terminal is too small|reduce font size or maximize width/i,
+    task: 'Run `/testfcm` with the width warning disabled in the isolated config or force a wider PTY before sending Enter.',
+  },
   {
     id: 'tool_missing',
     title: 'Tool binary missing',
@@ -140,21 +121,14 @@ const TRANSCRIPT_FINDING_RULES = [
     title: 'Invalid or missing API auth',
     severity: 'high',
     regex: /invalid api|bad api key|incorrect api key|authentication failed|unauthorized|forbidden|missing api key|no api key|anthropic_auth_token|401\b|403\b/i,
-    task: 'Validate the provider key used by the selected model, then re-run `/testfcm` and inspect the proxy request log for the failing request.',
+    task: 'Validate the provider key used by the selected model, then re-run `/testfcm` and inspect the generated tool config and transcript.',
   },
   {
     id: 'rate_limited',
     title: 'Provider rate limited',
     severity: 'medium',
     regex: /rate limit|too many requests|quota exceeded|429\b/i,
-    task: 'Retry with another configured provider or inspect the retry-after and cooldown handling in the proxy/tool launch flow.',
-  },
-  {
-    id: 'proxy_failure',
-    title: 'Proxy startup or routing failure',
-    severity: 'high',
-    regex: /failed to start proxy|proxy mode .* required|selected model may not exist|routing reload is taking longer than expected|proxy launch is blocked/i,
-    task: 'Inspect `request-log.jsonl`, proxy startup messages, and the isolated config to verify the tool can reach the local FCM proxy.',
+    task: 'Retry with another configured provider or inspect cooldown handling in the direct launcher flow.',
   },
   {
     id: 'tool_launch_failed',
@@ -211,7 +185,9 @@ export function hasConfiguredKey(value) {
 }
 
 /**
- * 📖 Build an artifact-friendly run id such as `20260316-184512`.
+ * 📖 Build an artifact-friendly run id such as `20260316-184512-123`.
+ * 📖 Milliseconds keep concurrent `/testfcm` runs from clobbering each other's
+ * 📖 reports and isolated HOME directories when they start in the same second.
  *
  * @param {Date} [date]
  * @returns {string}
@@ -219,10 +195,11 @@ export function hasConfiguredKey(value) {
 export function createTestfcmRunId(date = new Date()) {
   const iso = date.toISOString()
   return iso
-    .replace(/\.\d{3}Z$/, '')
+    .replace(/Z$/, '')
     .replace(/:/g, '')
     .replace(/-/g, '')
     .replace('T', '-')
+    .replace(/\.(\d{3})$/, '-$1')
 }
 
 /**
@@ -244,6 +221,76 @@ export function extractJsonPayload(text) {
     }
   }
   return null
+}
+
+/**
+ * 📖 Pick the best row to highlight before the runner presses Enter.
+ * 📖 The TUI and `--json` share the same sorted result order, so picking the
+ * 📖 first clearly healthy row from the preflight is a cheap way to avoid
+ * 📖 wasting E2E runs on obviously dead or auth-failing models.
+ *
+ * @param {Array<{ label?: string, status?: string, httpCode?: string }>} results
+ * @param {{ preferProxy?: boolean }} [options]
+ * @returns {number}
+ */
+export function pickTestfcmSelectionIndex(results, options = {}) {
+  if (!Array.isArray(results) || results.length === 0) return 0
+
+  if (options.preferProxy === true) {
+    const groups = new Map()
+
+    for (let index = 0; index < results.length; index++) {
+      const row = results[index]
+      const label = typeof row?.label === 'string' ? row.label.trim() : ''
+      if (!label) continue
+
+      if (!groups.has(label)) {
+        groups.set(label, {
+          rows: [],
+          hasUp: false,
+          hasAuthFailure: false,
+          hasRateLimit: false,
+          hasNotFound: false,
+        })
+      }
+
+      const group = groups.get(label)
+      const httpCode = String(row?.httpCode || '')
+      group.rows.push({ index, row })
+      if (row?.status === 'up') group.hasUp = true
+      if (row?.status === 'auth_error' || httpCode === '401' || httpCode === '403') group.hasAuthFailure = true
+      if (httpCode === '429') group.hasRateLimit = true
+      if (httpCode === '404') group.hasNotFound = true
+    }
+
+    for (const row of results) {
+      const label = typeof row?.label === 'string' ? row.label.trim() : ''
+      const group = groups.get(label)
+      if (!group?.hasUp) continue
+      if (group.hasAuthFailure || group.hasRateLimit || group.hasNotFound) continue
+      const target = group.rows.find((entry) => entry.row?.status === 'up')
+      if (target) return target.index
+    }
+
+    for (const row of results) {
+      const label = typeof row?.label === 'string' ? row.label.trim() : ''
+      const group = groups.get(label)
+      if (!group?.hasUp || group.hasAuthFailure) continue
+      const target = group.rows.find((entry) => entry.row?.status === 'up')
+      if (target) return target.index
+    }
+  }
+
+  const exactUpIndex = results.findIndex((row) => row?.status === 'up' && String(row?.httpCode || '') === '200')
+  if (exactUpIndex >= 0) return exactUpIndex
+
+  const upIndex = results.findIndex((row) => row?.status === 'up')
+  if (upIndex >= 0) return upIndex
+
+  const okCodeIndex = results.findIndex((row) => String(row?.httpCode || '') === '200')
+  if (okCodeIndex >= 0) return okCodeIndex
+
+  return 0
 }
 
 /**
@@ -409,14 +456,14 @@ export function buildTestfcmReport(input) {
   }
   lines.push('')
 
-  lines.push('## Request Log Summary')
+  lines.push('## Runtime Diagnostics')
   lines.push('')
   if (requestLogSummary.length > 0) {
     for (const entry of requestLogSummary) {
       lines.push(`- ${entry}`)
     }
   } else {
-    lines.push('- No proxy request log entry was captured for this run.')
+    lines.push('- No extra runtime diagnostic summary was captured for this run.')
   }
   lines.push('')
 

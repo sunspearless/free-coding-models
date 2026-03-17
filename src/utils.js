@@ -388,14 +388,14 @@ export function findBestModel(results) {
 // 📖 Argument types:
 //   - API key: first positional arg that does not look like a CLI flag (e.g., "nvapi-xxx")
 //   - Boolean flags: --best, --fiable, --opencode, --opencode-desktop, --openclaw,
-//     --aider, --crush, --goose, --claude-code, --codex, --gemini, --qwen,
+//     --aider, --crush, --goose, --qwen,
 //     --openhands, --amp, --pi, --no-telemetry, --json, --help/-h (case-insensitive)
 //   - Value flag: --tier <letter> (the next non-flag arg is the tier value)
 //
 // 📖 Returns:
 //   { apiKey, bestMode, fiableMode, openCodeMode, openCodeDesktopMode, openClawMode,
-//     aiderMode, crushMode, gooseMode, claudeCodeMode, codexMode, geminiMode,
-//     qwenMode, openHandsMode, ampMode, piMode, noTelemetry, jsonMode, helpMode, tierFilter }
+//     aiderMode, crushMode, gooseMode, qwenMode, openHandsMode, ampMode,
+//     piMode, noTelemetry, jsonMode, helpMode, tierFilter }
 //
 // 📖 Note: apiKey may be null here — the main CLI falls back to env vars and saved config.
 export function parseArgs(argv) {
@@ -450,16 +450,11 @@ export function parseArgs(argv) {
   const aiderMode = flags.includes('--aider')
   const crushMode = flags.includes('--crush')
   const gooseMode = flags.includes('--goose')
-  const claudeCodeMode = flags.includes('--claude-code')
-  const codexMode = flags.includes('--codex')
-  const geminiMode = flags.includes('--gemini')
   const qwenMode = flags.includes('--qwen')
   const openHandsMode = flags.includes('--openhands')
   const ampMode = flags.includes('--amp')
   const piMode = flags.includes('--pi')
   const noTelemetry = flags.includes('--no-telemetry')
-  const cleanProxyMode = flags.includes('--clean-proxy') || flags.includes('--proxy-clean')
-  const proxyForegroundMode = flags.includes('--proxy')
   const jsonMode = flags.includes('--json')
   const helpMode = flags.includes('--help') || flags.includes('-h')
   const premiumMode = flags.includes('--premium')
@@ -492,15 +487,11 @@ export function parseArgs(argv) {
     aiderMode,
     crushMode,
     gooseMode,
-    claudeCodeMode,
-    codexMode,
-    geminiMode,
     qwenMode,
     openHandsMode,
     ampMode,
     piMode,
     noTelemetry,
-    cleanProxyMode,
     jsonMode,
     helpMode,
     tierFilter,
@@ -514,7 +505,6 @@ export function parseArgs(argv) {
     premiumMode,
     // 📖 Profile system removed - API keys now persist permanently across all sessions
     recommendMode,
-    proxyForegroundMode,
   }
 }
 
@@ -686,61 +676,6 @@ export function getTopRecommendations(results, taskType, priority, contextBudget
     .sort((a, b) => b.score - a.score)
 
   return scored.slice(0, topN)
-}
-
-/**
- * 📖 getProxyStatusInfo: Pure function that maps startup proxy status + active proxy state
- * 📖 to a normalised descriptor object consumed by the TUI footer indicator.
- *
- * 📖 Priority of evaluation:
- *   1. proxyStartupStatus.phase === 'starting' → state:'starting'
- *   2. proxyStartupStatus.phase === 'running'  → state:'running' with port/accountCount
- *   3. proxyStartupStatus.phase === 'failed'   → state:'failed' with truncated reason
- *   4. isProxyActive (legacy activeProxy flag)  → state:'running' (no port detail)
- *   5. isProxyEnabled                           → state:'configured'
- *   6. otherwise                               → state:'stopped'
- *
- * 📖 Reason is clamped to 80 characters to keep footer readable (no stack traces).
- *
- * @param {object|null} proxyStartupStatus — state.proxyStartupStatus value
- * @param {boolean} isProxyActive — truthy when the module-level activeProxy is non-null
- * @param {boolean} [isProxyEnabled=false] — truthy when proxy mode is enabled in settings
- * @returns {{ state: string, port?: number, accountCount?: number, reason?: string }}
- */
-export function getProxyStatusInfo(proxyStartupStatus, isProxyActive, isProxyEnabled = false) {
-  const MAX_REASON = 80
-
-  if (proxyStartupStatus) {
-    const { phase } = proxyStartupStatus
-    if (phase === 'starting') {
-      return { state: 'starting' }
-    }
-    if (phase === 'running') {
-      return {
-        state: 'running',
-        port: proxyStartupStatus.port,
-        accountCount: proxyStartupStatus.accountCount,
-      }
-    }
-    if (phase === 'failed') {
-      const raw = proxyStartupStatus.reason ?? 'unknown error'
-      return {
-        state: 'failed',
-        reason: raw.length > MAX_REASON ? raw.slice(0, MAX_REASON - 1) + '…' : raw,
-      }
-    }
-  }
-
-  // 📖 Legacy fallback: activeProxy set directly (e.g. from manual proxy start without startup status)
-  if (isProxyActive) {
-    return { state: 'running' }
-  }
-
-  if (isProxyEnabled) {
-    return { state: 'configured' }
-  }
-
-  return { state: 'stopped' }
 }
 
 /**

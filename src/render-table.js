@@ -13,13 +13,11 @@
  *   - Emoji-aware padding via padEndDisplay for aligned verdict/status cells
  *   - Viewport clipping with above/below indicators
  *   - Smart badges (mode, tier filter, origin filter)
- *   - Footer J badge: green "Proxy On" / red "Proxy Off" indicator with direct overlay access
  *   - Install-endpoints shortcut surfaced directly in the footer hints
  *   - Full-width red outdated-version banner when a newer npm release is known
  *   - Distinct auth-failure vs missing-key health labels so configured providers stay honest
  *
  *   → Functions:
- *   - `setActiveProxy` — Provide the active proxy instance for footer status rendering
  *   - `renderTable` — Render the full TUI table as a string (no side effects)
  *
  *   📦 Dependencies:
@@ -28,7 +26,7 @@
  *   - ../src/tier-colors.js: TIER_COLOR
  *   - ../src/utils.js: getAvg, getVerdict, getUptime, getStabilityScore
  *   - ../src/ping.js: usagePlaceholderForProvider
- *   - ../src/render-helpers.js: calculateViewport, sortResultsWithPinnedFavorites, renderProxyStatusLine, padEndDisplay
+ *   - ../src/render-helpers.js: calculateViewport, sortResultsWithPinnedFavorites, padEndDisplay
  *
  *   @see bin/free-coding-models.js — main entry point that calls renderTable
  */
@@ -43,6 +41,7 @@ import { usagePlaceholderForProvider } from './ping.js'
 import { formatTokenTotalCompact } from './token-usage-reader.js'
 import { calculateViewport, sortResultsWithPinnedFavorites, padEndDisplay, displayWidth } from './render-helpers.js'
 import { getToolMeta } from './tool-metadata.js'
+import { PROXY_DISABLED_NOTICE } from './product-flags.js'
 
 const ACTIVE_FILTER_BG_BY_TIER = {
   'S+': [57, 255, 20],
@@ -84,16 +83,8 @@ export const PROVIDER_COLOR = {
   iflow: [220, 231, 117],
 }
 
-// 📖 Active proxy reference for footer status line (set by bin/free-coding-models.js).
-let activeProxyRef = null
-
-// 📖 setActiveProxy: Store active proxy instance for renderTable footer line.
-export function setActiveProxy(proxyInstance) {
-  activeProxyRef = proxyInstance
-}
-
 // ─── renderTable: mode param controls footer hint text (opencode vs openclaw) ─────────
-export function renderTable(results, pendingPings, frame, cursor = null, sortColumn = 'avg', sortDirection = 'asc', pingInterval = PING_INTERVAL, lastPingTime = Date.now(), mode = 'opencode', tierFilterMode = 0, scrollOffset = 0, terminalRows = 0, terminalCols = 0, originFilterMode = 0, proxyStartupStatus = null, pingMode = 'normal', pingModeSource = 'auto', hideUnconfiguredModels = false, widthWarningStartedAt = null, widthWarningDismissed = false, widthWarningShowCount = 0, settingsUpdateState = 'idle', settingsUpdateLatestVersion = null, proxyEnabled = false, startupLatestVersion = null, versionAlertsEnabled = true, disableWidthsWarning = false) {
+export function renderTable(results, pendingPings, frame, cursor = null, sortColumn = 'avg', sortDirection = 'asc', pingInterval = PING_INTERVAL, lastPingTime = Date.now(), mode = 'opencode', tierFilterMode = 0, scrollOffset = 0, terminalRows = 0, terminalCols = 0, originFilterMode = 0, legacyStatus = null, pingMode = 'normal', pingModeSource = 'auto', hideUnconfiguredModels = false, widthWarningStartedAt = null, widthWarningDismissed = false, widthWarningShowCount = 0, settingsUpdateState = 'idle', settingsUpdateLatestVersion = null, legacyFlag = false, startupLatestVersion = null, versionAlertsEnabled = true, disableWidthsWarning = false) {
   // 📖 Filter out hidden models for display
   const visibleResults = results.filter(r => !r.hidden)
 
@@ -561,7 +552,7 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     const usageCell = ''
 
     // 📖 Used column — total historical prompt+completion tokens consumed for this
-    // 📖 exact provider/model pair, loaded once from request-log.jsonl at startup.
+    // 📖 exact provider/model pair, loaded from the local usage snapshot file at startup.
     const tokenTotal = Number(r.totalTokens) || 0
     const tokensCell = tokenTotal > 0
       ? chalk.rgb(120, 210, 255)(formatTokenTotalCompact(tokenTotal).padEnd(W_TOKENS))
@@ -595,8 +586,6 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
   const activeHotkey = (keyLabel, text, bg = [57, 255, 20], fg = [0, 0, 0]) => chalk.bgRgb(...bg).rgb(...fg)(` ${keyLabel}${text} `)
   // 📖 Line 1: core navigation + filtering shortcuts
   lines.push(
-    (proxyEnabled ? activeHotkey('J', ' 📡 FCM Proxy V2 On') : activeHotkey('J', ' 📡 FCM Proxy V2 Off', [180, 30, 30], [255, 255, 255])) +
-    chalk.dim(`  •  `) +
     hotkey('F', ' Toggle Favorite') +
     chalk.dim(`  •  `) +
     (tierFilterMode > 0
@@ -609,13 +598,11 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     chalk.dim(`  •  `) +
     (hideUnconfiguredModels ? activeHotkey('E', ' Configured Models Only') : hotkey('E', ' Configured Models Only')) +
     chalk.dim(`  •  `) +
-    hotkey('X', ' Token Logs') +
-    chalk.dim(`  •  `) +
     hotkey('P', ' Settings') +
     chalk.dim(`  •  `) +
     hotkey('K', ' Help')
   )
-  // 📖 Line 2: install flow, recommend, proxy shortcut, feedback, and extended hints.
+  // 📖 Line 2: install flow, recommend, feedback, and extended hints.
   lines.push(
     chalk.dim(`  `) +
     hotkey('Y', ' Install endpoints') + chalk.dim(`  •  `) +
@@ -653,6 +640,11 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     // 📖 Reserve a dedicated full-width red row so the warning cannot blend into the footer links.
     lines.push(chalk.bgRed.white.bold(paddedBanner))
   }
+
+  // 📖 Stable release notice: keep the bridge rebuild status explicit in the main UI
+  // 📖 so users do not go hunting for hidden controls that are disabled on purpose.
+  const bridgeNotice = chalk.magentaBright.italic(`  ${PROXY_DISABLED_NOTICE}`)
+  lines.push(bridgeNotice)
 
   // 📖 Append \x1b[K (erase to EOL) to each line so leftover chars from previous
   // 📖 frames are cleared. Then pad with blank cleared lines to fill the terminal,

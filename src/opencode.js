@@ -1,53 +1,37 @@
 /**
  * @file opencode.js
- * @description OpenCode integration and multi-account proxy lifecycle.
+ * @description OpenCode integration helpers for direct launches and Desktop setup.
  *
  * @details
  *   This module owns all OpenCode-related behavior:
  *   - Configure opencode.json with selected models/providers
  *   - Launch OpenCode CLI or Desktop
  *   - Manage ZAI proxy bridge for non-standard API paths
- *   - Start/stop the multi-account proxy server (fcm-proxy)
- *   - Auto-start proxy when the current tool is configured for proxy auto-sync
  *
  *   🎯 Key features:
  *   - Provider-aware config setup for OpenCode (NIM, Groq, Cerebras, etc.)
  *   - ZAI proxy bridge to rewrite /v1/* → /api/coding/paas/v4/*
  *   - Auto-pick tmux port for OpenCode sub-agents
- *   - Multi-account proxy with rotation + auto-sync to opencode.json
  *
  *   → Functions:
- *   - `setOpenCodeModelData` — Provide merged model lists for proxy topology
+ *   - `setOpenCodeModelData` — Keep shared merged model references available
  *   - `startOpenCode` — Launch OpenCode CLI with selected model
  *   - `startOpenCodeDesktop` — Set model and open Desktop app
- *   - `startProxyAndLaunch` — Start fcm-proxy then launch OpenCode
- *   - `autoStartProxyIfSynced` — Auto-start proxy and sync the current tool when enabled
- *   - `ensureProxyRunning` — Ensure proxy is running (start or reuse)
- *   - `isProxyEnabledForConfig` — Check whether proxy mode is opted in
  *
- *   @see src/opencode-sync.js — syncToOpenCode/load/save utilities
- *   @see src/proxy-server.js  — ProxyServer implementation
+ *   @see src/opencode-config.js — shared OpenCode config read/write helpers
  */
 
 import chalk from 'chalk'
 import { createServer } from 'net'
 import { createServer as createHttpServer } from 'http'
 import { request as httpsRequest } from 'https'
-import { randomUUID } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
 import { copyFileSync, existsSync } from 'fs'
-import { sources } from '../sources.js'
 import { PROVIDER_COLOR } from './render-table.js'
-import { ProxyServer } from './proxy-server.js'
-import { loadOpenCodeConfig, saveOpenCodeConfig } from './opencode-sync.js'
-import { getApiKey, getProxySettings } from './config.js'
+import { loadOpenCodeConfig, saveOpenCodeConfig } from './opencode-config.js'
+import { getApiKey } from './config.js'
 import { ENV_VAR_NAMES, OPENCODE_MODEL_MAP, isWindows, isMac, isLinux } from './provider-metadata.js'
-import { setActiveProxy } from './render-table.js'
-import { buildProxyTopologyFromConfig as _buildTopology } from './proxy-topology.js'
-import { isDaemonRunning, getDaemonInfo } from './daemon-manager.js'
-import { syncProxyToTool, resolveProxySyncToolMode } from './proxy-sync.js'
-import { getToolMeta } from './tool-metadata.js'
 
 // 📖 OpenCode config location: ~/.config/opencode/opencode.json on ALL platforms.
 // 📖 OpenCode uses xdg-basedir which resolves to %USERPROFILE%\.config on Windows.
@@ -55,12 +39,7 @@ const OPENCODE_CONFIG = join(homedir(), '.config', 'opencode', 'opencode.json')
 const OPENCODE_PORT_RANGE_START = 4096
 const OPENCODE_PORT_RANGE_END = 5096
 
-// 📖 Module-level proxy state — shared between startProxyAndLaunch and cleanup.
-let activeProxy = null
-let proxyCleanedUp = false
-let exitHandlersRegistered = false
-
-// 📖 Merged model references for proxy topology.
+// 📖 Keep merged model references available for future OpenCode-related features.
 let mergedModelsRef = []
 let mergedModelByLabelRef = new Map()
 
@@ -68,19 +47,6 @@ let mergedModelByLabelRef = new Map()
 export function setOpenCodeModelData(mergedModels, mergedModelByLabel) {
   mergedModelsRef = Array.isArray(mergedModels) ? mergedModels : []
   mergedModelByLabelRef = mergedModelByLabel instanceof Map ? mergedModelByLabel : new Map()
-}
-
-/**
- * 📖 resolveProxyModelId maps a selected provider-specific model to the shared
- * 📖 proxy catalog slug used by `fcm-proxy`. The proxy exposes merged slugs, not
- * 📖 upstream provider ids, so every launcher that targets the proxy must use this.
- *
- * @param {{ label?: string, modelId?: string }} model
- * @returns {string}
- */
-export function resolveProxyModelId(model) {
-  const merged = mergedModelByLabelRef.get(model?.label)
-  return merged?.slug ?? model?.modelId ?? ''
 }
 
 // 📖 isTcpPortAvailable: checks if a local TCP port is free for OpenCode.
@@ -525,214 +491,6 @@ export async function startOpenCode(model, fcmConfig) {
   console.log()
 
   await spawnOpenCode(['--model', modelRef], providerKey, fcmConfig)
-}
-
-// ─── Proxy lifecycle ─────────────────────────────────────────────────────────
-
-async function cleanupProxy() {
-  // 📖 Only clean up in-process proxy. If using daemon, it stays alive.
-  if (proxyCleanedUp || !activeProxy) return
-  proxyCleanedUp = true
-  const proxy = activeProxy
-  activeProxy = null
-  setActiveProxy(activeProxy)
-  try {
-    await proxy.stop()
-  } catch { /* best-effort */ }
-}
-
-function registerExitHandlers() {
-  if (exitHandlersRegistered) return
-  exitHandlersRegistered = true
-  const cleanup = () => { cleanupProxy().catch(() => {}) }
-  process.once('SIGINT',  cleanup)
-  process.once('SIGTERM', cleanup)
-  process.once('exit',    cleanup)
-}
-
-// 📖 Thin wrapper that passes module-level mergedModelsRef to the shared topology builder.
-// 📖 The standalone daemon calls _buildTopology() directly with its own merged models.
-export function buildProxyTopologyFromConfig(fcmConfig) {
-  return _buildTopology(fcmConfig, mergedModelsRef, sources)
-}
-
-/**
- * 📖 Proxy mode is opt-in. Both launch-time proxying and persistent sync rely on
- * 📖 this single helper so settings/profile changes behave consistently.
- *
- * @param {object} fcmConfig
- * @returns {boolean}
- */
-export function isProxyEnabledForConfig(fcmConfig) {
-  return getProxySettings(fcmConfig).enabled === true
-}
-
-export async function ensureProxyRunning(fcmConfig, { forceRestart = false } = {}) {
-  registerExitHandlers()
-  proxyCleanedUp = false
-
-  if (!isProxyEnabledForConfig(fcmConfig)) {
-    throw new Error('Proxy mode is disabled in Settings')
-  }
-
-  // 📖 Always prefer the background daemon when it is available. Launcher code
-  // 📖 can update config and let the daemon hot-reload, which is closer to the
-  // 📖 Claude proxy model than spinning up tool-specific local proxies.
-  try {
-    const daemonRunning = await isDaemonRunning()
-    if (daemonRunning) {
-      const info = getDaemonInfo()
-      if (info) {
-        return {
-          port: info.port,
-          accountCount: info.accountCount || 0,
-          proxyToken: info.token,
-          proxyModels: null,
-          availableModelSlugs: new Set(), // 📖 daemon handles model discovery
-          isDaemon: true,
-        }
-      }
-    }
-  } catch { /* daemon check failed — fall through to in-process */ }
-
-  if (forceRestart && activeProxy) {
-    await cleanupProxy()
-  }
-
-  const existingStatus = activeProxy?.getStatus?.()
-  if (existingStatus?.running === true) {
-    const availableModelSlugs = new Set(
-      (activeProxy._accounts || []).map(a => a.proxyModelId).filter(Boolean)
-    )
-    return {
-      port: existingStatus.port,
-      accountCount: existingStatus.accountCount,
-      proxyToken: activeProxy?._proxyApiKey,
-      proxyModels: null,
-      availableModelSlugs,
-    }
-  }
-
-  const { accounts, proxyModels, anthropicRouting } = buildProxyTopologyFromConfig(fcmConfig)
-  if (accounts.length === 0) {
-    throw new Error('No API keys found for proxy-capable models')
-  }
-
-  // 📖 Use stable token from config so env files / tool configs survive restarts
-  const proxySettings = getProxySettings(fcmConfig)
-  const proxyToken = proxySettings.stableToken || `fcm_${randomUUID().replace(/-/g, '')}`
-  const preferredPort = Number.isInteger(proxySettings.preferredPort) ? proxySettings.preferredPort : 0
-  const proxy = new ProxyServer({ port: preferredPort, accounts, proxyApiKey: proxyToken, anthropicRouting })
-  const { port } = await proxy.start()
-  activeProxy = proxy
-  setActiveProxy(activeProxy)
-
-  const availableModelSlugs = new Set(accounts.map(a => a.proxyModelId).filter(Boolean))
-  return { port, accountCount: accounts.length, proxyToken, proxyModels, availableModelSlugs }
-}
-
-export async function autoStartProxyIfSynced(fcmConfig, state) {
-  try {
-    const proxySettings = getProxySettings(fcmConfig)
-    if (!proxySettings.enabled || !proxySettings.syncToOpenCode) return
-    const currentToolMode = state?.mode || 'opencode'
-    const syncTarget = resolveProxySyncToolMode(currentToolMode)
-    if (!syncTarget) return
-
-    state.proxyStartupStatus = { phase: 'starting' }
-
-    const started = await ensureProxyRunning(fcmConfig)
-    const syncResult = syncProxyToTool(syncTarget, {
-      baseUrl: `http://127.0.0.1:${started.port}/v1`,
-      token: started.proxyToken,
-    }, mergedModelsRef)
-    if (!syncResult.success) {
-      throw new Error(syncResult.error || `Proxy sync failed for ${syncTarget}`)
-    }
-
-    state.proxyStartupStatus = {
-      phase: 'running',
-      port: started.port,
-      accountCount: started.accountCount,
-      tool: getToolMeta(syncTarget).label,
-      path: syncResult.path || null,
-    }
-  } catch (err) {
-    state.proxyStartupStatus = {
-      phase: 'failed',
-      reason: err?.message ?? String(err),
-    }
-  }
-}
-
-export async function startProxyAndLaunch(model, fcmConfig) {
-  try {
-    const started = await ensureProxyRunning(fcmConfig, { forceRestart: true })
-    const defaultProxyModelId = resolveProxyModelId(model)
-
-    if (!started.proxyModels || Object.keys(started.proxyModels).length === 0) {
-      throw new Error('Proxy model catalog is empty')
-    }
-
-    console.log(chalk.dim(`  🔀 Multi-account proxy listening on port ${started.port} (${started.accountCount} accounts)`))
-    await startOpenCodeWithProxy(model, started.port, defaultProxyModelId, started.proxyModels, fcmConfig, started.proxyToken)
-  } catch (err) {
-    console.error(chalk.red(`  ✗ Proxy failed to start: ${err.message}`))
-    console.log(chalk.dim('  Falling back to direct single-account flow…'))
-    await cleanupProxy()
-    await startOpenCode(model, fcmConfig)
-  }
-}
-
-async function startOpenCodeWithProxy(model, port, proxyModelId, proxyModels, fcmConfig, proxyToken) {
-  const config = loadOpenCodeConfig()
-  if (!config.provider) config.provider = {}
-  const previousProxyProvider = config.provider['fcm-proxy']
-  const previousModel = config.model
-
-  const fallbackModelId = Object.keys(proxyModels)[0]
-  const selectedProxyModelId = proxyModels[proxyModelId] ? proxyModelId : fallbackModelId
-
-  config.provider['fcm-proxy'] = {
-    npm: '@ai-sdk/openai-compatible',
-    name: 'FCM Proxy V2',
-    options: {
-      baseURL: `http://127.0.0.1:${port}/v1`,
-      apiKey: proxyToken
-    },
-    models: proxyModels
-  }
-  config.model = `fcm-proxy/${selectedProxyModelId}`
-  saveOpenCodeConfig(config)
-
-  console.log(chalk.green(`  Setting ${chalk.bold(model.label)} via proxy as default for OpenCode…`))
-  console.log(chalk.dim(`  Model: fcm-proxy/${selectedProxyModelId}  •  Proxy: http://127.0.0.1:${port}/v1`))
-  console.log(chalk.dim(`  Catalog: ${Object.keys(proxyModels).length} models available via fcm-proxy`))
-  console.log()
-
-  try {
-    await spawnOpenCode(['--model', `fcm-proxy/${selectedProxyModelId}`], 'fcm-proxy', fcmConfig)
-  } finally {
-    try {
-      const savedCfg = loadOpenCodeConfig()
-      if (!savedCfg.provider) savedCfg.provider = {}
-
-      if (previousProxyProvider) {
-        savedCfg.provider['fcm-proxy'] = previousProxyProvider
-      } else if (savedCfg.provider['fcm-proxy']) {
-        delete savedCfg.provider['fcm-proxy']
-      }
-
-      if (typeof previousModel === 'string' && previousModel.length > 0) {
-        savedCfg.model = previousModel
-      } else if (typeof savedCfg.model === 'string' && savedCfg.model.startsWith('fcm-proxy/')) {
-        delete savedCfg.model
-      }
-
-      saveOpenCodeConfig(savedCfg)
-    } catch { /* best-effort */ }
-    await cleanupProxy()
-  }
 }
 
 // ─── Start OpenCode Desktop ───────────────────────────────────────────────────

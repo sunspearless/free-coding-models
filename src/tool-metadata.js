@@ -21,7 +21,6 @@
  *
  * @exports TOOL_METADATA, TOOL_MODE_ORDER, getToolMeta, getToolModeOrder
  */
-
 export const TOOL_METADATA = {
   opencode: { label: 'OpenCode CLI', emoji: '💻', flag: '--opencode' },
   'opencode-desktop': { label: 'OpenCode Desktop', emoji: '🖥', flag: '--opencode-desktop' },
@@ -30,9 +29,6 @@ export const TOOL_METADATA = {
   goose: { label: 'Goose', emoji: '🪿', flag: '--goose' },
   pi: { label: 'Pi', emoji: 'π', flag: '--pi' },
   aider: { label: 'Aider', emoji: '🛠', flag: '--aider' },
-  'claude-code': { label: 'Claude Code', emoji: '🧠', flag: '--claude-code' },
-  codex: { label: 'Codex CLI', emoji: '⌘', flag: '--codex' },
-  gemini: { label: 'Gemini CLI', emoji: '✦', flag: '--gemini' },
   qwen: { label: 'Qwen Code', emoji: '🌊', flag: '--qwen' },
   openhands: { label: 'OpenHands', emoji: '🤲', flag: '--openhands' },
   amp: { label: 'Amp', emoji: '⚡', flag: '--amp' },
@@ -46,9 +42,6 @@ export const TOOL_MODE_ORDER = [
   'goose',
   'pi',
   'aider',
-  'claude-code',
-  'codex',
-  'gemini',
   'qwen',
   'openhands',
   'amp',

@@ -4,9 +4,8 @@
  *
  * Scope:
  *   1. G        — usage sort: sortResults('usage') sorts by usagePercent asc/desc
- *   2. X key    — log page toggle: logVisible state flag semantics
- *   3. W key    — ping mode cycle: speed → normal → slow → forced
- *   4. Auto ping transitions — startup speed drops to normal, inactivity drops to slow,
+ *   2. W key    — ping mode cycle: speed → normal → slow → forced
+ *   3. Auto ping transitions — startup speed drops to normal, inactivity drops to slow,
  *                  and activity wakes idle sessions back into a 60s speed burst
  *
  * Because the TUI is a full interactive loop we test the underlying pure logic
@@ -16,8 +15,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { sortResults, getProxyStatusInfo, getVersionStatusInfo } from '../src/utils.js'
-import { renderProxyStatusLine } from '../src/render-helpers.js'
+import { sortResults, getVersionStatusInfo } from '../src/utils.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -110,60 +108,6 @@ describe('tui-hotkeys – G usage sort', () => {
     }
     assert.strictEqual(sortColumn, 'usage')
     assert.strictEqual(sortDirection, 'asc')
-  })
-})
-
-// ─── Suite: X key — log page toggle ──────────────────────────────────────────
-
-describe('tui-hotkeys – X key log page toggle', () => {
-  it('toggling logVisible false→true opens log page', () => {
-    const state = { logVisible: false, logScrollOffset: 0 }
-
-    // Simulate X key press
-    state.logVisible = !state.logVisible
-    if (state.logVisible) state.logScrollOffset = 0
-
-    assert.strictEqual(state.logVisible, true)
-    assert.strictEqual(state.logScrollOffset, 0)
-  })
-
-  it('toggling logVisible true→false closes log page', () => {
-    const state = { logVisible: true, logScrollOffset: 10 }
-
-    state.logVisible = !state.logVisible
-    if (state.logVisible) state.logScrollOffset = 0
-
-    assert.strictEqual(state.logVisible, false)
-    // scrollOffset is preserved when closing (next open will reset it)
-    assert.strictEqual(state.logScrollOffset, 10)
-  })
-
-  it('opening log page resets scrollOffset to 0', () => {
-    const state = { logVisible: false, logScrollOffset: 42 }
-
-    state.logVisible = !state.logVisible
-    if (state.logVisible) state.logScrollOffset = 0
-
-    assert.strictEqual(state.logVisible, true)
-    assert.strictEqual(state.logScrollOffset, 0)
-  })
-
-  it('Esc closes the log page', () => {
-    const state = { logVisible: true }
-
-    // Simulate Esc key while logVisible
-    // key.name === 'escape' → logVisible = false
-    state.logVisible = false
-
-    assert.strictEqual(state.logVisible, false)
-  })
-
-  it('X key is distinct from W (ping mode toggle) key', () => {
-    // X must NOT change ping mode; W must NOT toggle log
-    const KEY_LOG_TOGGLE   = 'x'
-    const KEY_PING_MODE    = 'w'
-
-    assert.notStrictEqual(KEY_LOG_TOGGLE, KEY_PING_MODE)
   })
 })
 
@@ -296,91 +240,15 @@ describe('tui-hotkeys – W key ping mode cycle + auto transitions', () => {
     assert.strictEqual(state.pingInterval, 4000)
   })
 
-  it('X key no longer adjusts ping cadence — it toggles logVisible', () => {
-    // The binding contract: X → log toggle, W → ping mode cycle
+  it('X key no longer adjusts ping cadence and stays unassigned in the public TUI', () => {
     const sortKeys = {
       'r': 'rank', 'o': 'origin', 'm': 'model',
       'l': 'ping', 'a': 'avg', 's': 'swe', 'c': 'ctx',
       'h': 'condition', 'v': 'verdict', 'b': 'stability', 'u': 'uptime', 'g': 'usage',
     }
-    // X is NOT a sort key
     assert.ok(!('x' in sortKeys), 'x must not be in sort keys')
-    // Y is NOT a sort key anymore (it opens Install Endpoints)
     assert.ok(!('y' in sortKeys), 'y must not be in sort keys')
-    // W is NOT a sort key (it controls interval)
     assert.ok(!('w' in sortKeys), 'w must not be in sort keys')
-  })
-})
-
-// ─── Suite: proxy status indicator — getProxyStatusInfo ──────────────────────
-
-describe('tui-hotkeys – proxy status indicator (getProxyStatusInfo)', () => {
-  it('returns "stopped" state when proxyStartupStatus is null and proxy is not active', () => {
-    const info = getProxyStatusInfo(null, false)
-    assert.strictEqual(info.state, 'stopped')
-  })
-
-  it('returns "starting" state when proxyStartupStatus phase is "starting"', () => {
-    const info = getProxyStatusInfo({ phase: 'starting' }, false)
-    assert.strictEqual(info.state, 'starting')
-  })
-
-  it('"running" state carries port and accountCount from proxyStartupStatus', () => {
-    const info = getProxyStatusInfo({ phase: 'running', port: 4891, accountCount: 3 }, true)
-    assert.strictEqual(info.state, 'running')
-    assert.strictEqual(info.port, 4891)
-    assert.strictEqual(info.accountCount, 3)
-  })
-
-  it('"running" state falls back to "active" when proxyStartupStatus is null but activeProxy is true', () => {
-    const info = getProxyStatusInfo(null, true)
-    assert.strictEqual(info.state, 'running')
-  })
-
-  it('"failed" state carries a short reason string', () => {
-    const info = getProxyStatusInfo({ phase: 'failed', reason: 'EADDRINUSE: port in use' }, false)
-    assert.strictEqual(info.state, 'failed')
-    assert.ok(typeof info.reason === 'string', 'reason should be a string')
-    assert.ok(info.reason.length > 0, 'reason should be non-empty')
-  })
-
-  it('"failed" reason is truncated to 80 chars maximum', () => {
-    const longReason = 'x'.repeat(200)
-    const info = getProxyStatusInfo({ phase: 'failed', reason: longReason }, false)
-    assert.ok(info.reason.length <= 80, `reason should be ≤80 chars, got ${info.reason.length}`)
-  })
-
-  it('proxyStartupStatus "running" takes priority over null activeProxy', () => {
-    // Even if activeProxy object is falsy, a running startup status is authoritative
-    const info = getProxyStatusInfo({ phase: 'running', port: 5000, accountCount: 2 }, false)
-    assert.strictEqual(info.state, 'running')
-    assert.strictEqual(info.port, 5000)
-  })
-
-  it('returns "stopped" for unrecognized phase', () => {
-    const info = getProxyStatusInfo({ phase: 'unknown' }, false)
-    assert.strictEqual(info.state, 'stopped')
-  })
-})
-
-describe('tui-hotkeys – proxy footer rendering', () => {
-  it('shows proxy as running when a live proxy instance exists without startup status', () => {
-    const line = renderProxyStatusLine(null, {
-      getStatus() {
-        return { running: true, port: 4321, accountCount: 2 }
-      },
-    })
-
-    assert.match(line, /Proxy/)
-    assert.match(line, /running/)
-    assert.match(line, /4321/)
-  })
-
-  it('shows proxy as configured when settings enable it but it is not running yet', () => {
-    const line = renderProxyStatusLine(null, null, true)
-
-    assert.match(line, /Proxy configured/)
-    assert.match(line, /OpenCode rotation/)
   })
 })
 

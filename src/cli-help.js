@@ -37,26 +37,14 @@ const ANALYSIS_FLAGS = [
 ]
 
 const CONFIG_FLAGS = [
-  { flag: '--proxy', description: 'Start FCM Proxy V2 in foreground with live dashboard (no daemon)' },
   { flag: '--no-telemetry', description: 'Disable anonymous telemetry for this run' },
-  { flag: '--clean-proxy, --proxy-clean', description: 'Remove persisted fcm-proxy config from OpenCode' },
   { flag: '--help, -h', description: 'Print this help and exit' },
-]
-
-const COMMANDS = [
-  { command: 'daemon status', description: 'Show background FCM Proxy V2 service status' },
-  { command: 'daemon install', description: 'Install and start the background service' },
-  { command: 'daemon uninstall', description: 'Remove the background service' },
-  { command: 'daemon restart', description: 'Restart the background service' },
-  { command: 'daemon stop', description: 'Gracefully stop the background service without uninstalling it' },
-  { command: 'daemon logs', description: 'Print the latest daemon log lines' },
 ]
 
 const EXAMPLES = [
   'free-coding-models --help',
   'free-coding-models --openclaw --tier S',
   "free-coding-models --json | jq '.[0]'",
-  'free-coding-models daemon status',
 ]
 
 function paint(chalk, formatter, text) {
@@ -79,7 +67,6 @@ export function buildCliHelpLines({ chalk = null, indent = '', title = 'CLI Help
 
   lines.push(`${indent}${paint(chalk, chalk?.bold, title)}`)
   lines.push(`${indent}${paint(chalk, chalk?.dim, 'Usage: free-coding-models [apiKey] [options]')}`)
-  lines.push(`${indent}${paint(chalk, chalk?.dim, '       free-coding-models daemon [status|install|uninstall|restart|stop|logs]')}`)
   lines.push('')
   lines.push(`${indent}${paint(chalk, chalk?.bold, 'Tool Flags')}`)
   for (const entry of launchFlags) {
@@ -94,11 +81,6 @@ export function buildCliHelpLines({ chalk = null, indent = '', title = 'CLI Help
   lines.push(`${indent}${paint(chalk, chalk?.bold, 'Config & Maintenance')}`)
   for (const entry of CONFIG_FLAGS) {
     lines.push(formatEntry(entry.flag, entry.description, { chalk, indent }))
-  }
-  lines.push('')
-  lines.push(`${indent}${paint(chalk, chalk?.bold, 'Commands')}`)
-  for (const entry of COMMANDS) {
-    lines.push(formatEntry(entry.command, entry.description, { chalk, indent }))
   }
   lines.push('')
   lines.push(`${indent}${paint(chalk, chalk?.dim, 'Default launcher with no tool flag: OpenCode CLI')}`)

@@ -39,27 +39,23 @@ import {
   formatCtxWindow, labelFromId
 } from '../src/utils.js'
 import {
-  _emptyProfileSettings, getProxySettings,
-  normalizeProxySettings, normalizeEndpointInstalls, getApiKey, setClaudeProxyModelRouting,
+  _emptyProfileSettings,
+  normalizeEndpointInstalls, getApiKey,
   buildPersistedConfig
 } from '../src/config.js'
 import { buildProviderModelTokenKey, loadTokenUsageByProviderModel, formatTokenTotalCompact } from '../src/token-usage-reader.js'
 import { renderTable } from '../src/render-table.js'
 import { createOverlayRenderers } from '../src/overlays.js'
 import { buildProviderModelsUrl, parseProviderModelIds, listProviderTestModels, classifyProviderTestOutcome, buildProviderTestDetail } from '../src/key-handler.js'
-import { buildMergedModels } from '../src/model-merger.js'
-import { setOpenCodeModelData } from '../src/opencode.js'
-import { resolveProxySyncToolMode } from '../src/proxy-sync.js'
 import { buildCliHelpText } from '../src/cli-help.js'
 import {
-  buildClaudeProxyArgs,
-  buildCodexProxyArgs,
   buildToolEnv,
-  extractGeminiConfigError,
+  prepareExternalToolLaunch,
   resolveLauncherModelId,
 } from '../src/tool-launchers.js'
-import { parseLogLine } from '../src/log-reader.js'
+import { startOpenClaw } from '../src/openclaw.js'
 import { getConfiguredInstallableProviders, getInstallTargetModes, installProviderEndpoints } from '../src/endpoint-installer.js'
+import { cleanupLegacyProxyArtifacts } from '../src/legacy-proxy-cleanup.js'
 import {
   buildFixTasks,
   classifyToolTranscript,
@@ -67,6 +63,7 @@ import {
   extractJsonPayload,
   hasConfiguredKey,
   normalizeTestfcmToolName,
+  pickTestfcmSelectionIndex,
   resolveTestfcmToolSpec,
 } from '../src/testfcm.js'
 
@@ -888,8 +885,6 @@ describe('renderSettings provider test badges', () => {
       settingsUpdateState: 'idle',
       settingsUpdateLatestVersion: null,
       settingsUpdateError: null,
-      settingsProxyPortEditMode: false,
-      settingsProxyPortBuffer: '',
       settingsScrollOffset: 0,
       settingsSyncStatus: null,
       activeProfile: null,
@@ -913,7 +908,6 @@ describe('renderSettings provider test badges', () => {
       },
       LOCAL_VERSION: '0.2.1',
       getApiKey,
-      getProxySettings,
       resolveApiKeys: (cfg, providerKey) => {
         const raw = cfg.apiKeys?.[providerKey]
         if (Array.isArray(raw)) return raw
@@ -925,12 +919,10 @@ describe('renderSettings provider test badges', () => {
       SETTINGS_OVERLAY_BG: null,
       HELP_OVERLAY_BG: null,
       RECOMMEND_OVERLAY_BG: null,
-      LOG_OVERLAY_BG: null,
       OVERLAY_PANEL_WIDTH: 120,
       keepOverlayTargetVisible: (currentOffset) => currentOffset,
       sliceOverlayLines: (lines, offset = 0) => ({ visible: lines, offset }),
       tintOverlayLines: (lines) => lines,
-      loadRecentLogs: () => [],
       TASK_TYPES: [],
       PRIORITY_TYPES: [],
       CONTEXT_BUDGETS: [],
@@ -1061,9 +1053,6 @@ describe('parseArgs', () => {
       '--aider',
       '--crush',
       '--goose',
-      '--claude-code',
-      '--codex',
-      '--gemini',
       '--qwen',
       '--openhands',
       '--amp',
@@ -1072,9 +1061,6 @@ describe('parseArgs', () => {
     assert.equal(result.aiderMode, true)
     assert.equal(result.crushMode, true)
     assert.equal(result.gooseMode, true)
-    assert.equal(result.claudeCodeMode, true)
-    assert.equal(result.codexMode, true)
-    assert.equal(result.geminiMode, true)
     assert.equal(result.qwenMode, true)
     assert.equal(result.openHandsMode, true)
     assert.equal(result.ampMode, true)
@@ -1123,7 +1109,7 @@ describe('parseArgs', () => {
 })
 
 describe('cli help text', () => {
-  it('lists all supported CLI flags and daemon commands', () => {
+  it('lists the supported CLI flags for the direct-only app surface', () => {
     const help = buildCliHelpText()
     const expectedEntries = [
       '--opencode',
@@ -1133,9 +1119,6 @@ describe('cli help text', () => {
       '--goose',
       '--pi',
       '--aider',
-      '--claude-code',
-      '--codex',
-      '--gemini',
       '--qwen',
       '--openhands',
       '--amp',
@@ -1144,16 +1127,8 @@ describe('cli help text', () => {
       '--json',
       '--tier <S|A|B|C>',
       '--recommend',
-      '--proxy',
       '--no-telemetry',
-      '--clean-proxy, --proxy-clean',
       '--help, -h',
-      'daemon status',
-      'daemon install',
-      'daemon uninstall',
-      'daemon restart',
-      'daemon stop',
-      'daemon logs',
     ]
 
     for (const entry of expectedEntries) {
@@ -1423,17 +1398,6 @@ describe('parseArgs --recommend', () => {
   it('recommendMode defaults to false', () => {
     assert.equal(parseArgs(argv()).recommendMode, false)
   })
-
-  it('parses the proxy cleanup flags', () => {
-    assert.equal(parseArgs(argv('--clean-proxy')).cleanProxyMode, true)
-    assert.equal(parseArgs(argv('--proxy-clean')).cleanProxyMode, true)
-    assert.equal(parseArgs(argv()).cleanProxyMode, false)
-  })
-
-  it('parses --proxy foreground mode flag', () => {
-    assert.equal(parseArgs(argv('--proxy')).proxyForegroundMode, true)
-    assert.equal(parseArgs(argv()).proxyForegroundMode, false)
-  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1447,7 +1411,6 @@ describe('config profile functions', () => {
       providers: { nvidia: true },
       settings: {
         hideUnconfiguredModels: true,
-        proxy: { enabled: false, syncToOpenCode: false, preferredPort: 0 },
       },
       favorites: ['nvidia/test-model'],
       telemetry: { enabled: false },
@@ -1463,71 +1426,6 @@ describe('config profile functions', () => {
     assert.equal(settings.sortAsc, true)
     assert.equal(settings.pingInterval, 10000)
     assert.equal(settings.hideUnconfiguredModels, true)
-    assert.equal(settings.proxy.enabled, false)
-    assert.equal(settings.proxy.syncToOpenCode, false)
-    assert.equal(settings.proxy.preferredPort, 0)
-    assert.ok(settings.proxy.stableToken.startsWith('fcm_'))
-  })
-
-  it('normalizes proxy settings to disabled-by-default', () => {
-    const defaults = normalizeProxySettings()
-    assert.equal(defaults.enabled, false)
-    assert.equal(defaults.syncToOpenCode, false)
-    assert.equal(defaults.preferredPort, 0)
-    assert.equal(defaults.daemonEnabled, false)
-    assert.equal(defaults.daemonConsent, null)
-    assert.deepEqual(defaults.anthropicRouting, {
-      model: null,
-      modelOpus: null,
-      modelSonnet: null,
-      modelHaiku: null,
-    })
-    // 📖 stableToken is auto-generated if missing — just verify it exists and has the right prefix
-    assert.ok(typeof defaults.stableToken === 'string' && defaults.stableToken.startsWith('fcm_'))
-
-    const fromEmpty = getProxySettings({ settings: {} })
-    assert.equal(fromEmpty.enabled, false)
-    assert.equal(fromEmpty.syncToOpenCode, false)
-    assert.equal(fromEmpty.preferredPort, 0)
-    assert.equal(fromEmpty.anthropicRouting.model, null)
-    assert.ok(fromEmpty.stableToken.startsWith('fcm_'))
-
-    const explicit = getProxySettings({
-      settings: {
-        proxy: {
-          enabled: true,
-          syncToOpenCode: true,
-          preferredPort: 8123,
-          stableToken: 'fcm_mytoken',
-          anthropicRouting: {
-            model: 'gpt-oss-120b',
-            modelOpus: 'gpt-oss-120b',
-            modelSonnet: 'gpt-oss-120b',
-            modelHaiku: 'gpt-oss-120b',
-          },
-        },
-      },
-    })
-    assert.equal(explicit.enabled, true)
-    assert.equal(explicit.syncToOpenCode, true)
-    assert.equal(explicit.preferredPort, 8123)
-    assert.equal(explicit.stableToken, 'fcm_mytoken')
-    assert.equal(explicit.anthropicRouting.modelSonnet, 'gpt-oss-120b')
-  })
-
-  it('pins Claude proxy MODEL and MODEL_* routing to one selected proxy model', () => {
-    const config = { settings: {} }
-    const changed = setClaudeProxyModelRouting(config, 'fcm-proxy/gpt-oss-120b')
-    const proxySettings = getProxySettings(config)
-
-    assert.equal(changed, true)
-    assert.equal(proxySettings.enabled, true)
-    assert.deepEqual(proxySettings.anthropicRouting, {
-      model: 'gpt-oss-120b',
-      modelOpus: 'gpt-oss-120b',
-      modelSonnet: 'gpt-oss-120b',
-      modelHaiku: 'gpt-oss-120b',
-    })
   })
 
   it('defaults configured-only mode and preferred tool mode in profile settings', () => {
@@ -1544,7 +1442,7 @@ describe('buildPersistedConfig', () => {
         groq: 'disk-groq',
       },
       providers: {},
-      settings: { hideUnconfiguredModels: true, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: true },
       favorites: ['nvidia/model-a', 'groq/model-b'],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [],
@@ -1557,7 +1455,7 @@ describe('buildPersistedConfig', () => {
         nvidia: 'disk-nvidia',
       },
       providers: {},
-      settings: { hideUnconfiguredModels: false, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: false },
       favorites: ['nvidia/model-a'],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [],
@@ -1578,7 +1476,7 @@ describe('buildPersistedConfig', () => {
     const diskConfig = {
       apiKeys: {},
       providers: {},
-      settings: { hideUnconfiguredModels: true, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: true },
       favorites: ['nvidia/model-a', 'groq/model-b'],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [],
@@ -1589,7 +1487,7 @@ describe('buildPersistedConfig', () => {
     const incomingConfig = {
       apiKeys: {},
       providers: {},
-      settings: { hideUnconfiguredModels: true, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: true },
       favorites: ['groq/model-b'],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [],
@@ -1608,7 +1506,7 @@ describe('buildPersistedConfig', () => {
         groq: 'disk-groq',
       },
       providers: {},
-      settings: { hideUnconfiguredModels: true, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: true },
       favorites: [],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [],
@@ -1621,7 +1519,7 @@ describe('buildPersistedConfig', () => {
         nvidia: 'disk-nvidia',
       },
       providers: {},
-      settings: { hideUnconfiguredModels: true, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: true },
       favorites: [],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [],
@@ -1637,7 +1535,7 @@ describe('buildPersistedConfig', () => {
     const diskConfig = {
       apiKeys: {},
       providers: {},
-      settings: { hideUnconfiguredModels: true, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: true },
       favorites: [],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [
@@ -1656,7 +1554,7 @@ describe('buildPersistedConfig', () => {
     const incomingConfig = {
       apiKeys: {},
       providers: {},
-      settings: { hideUnconfiguredModels: true, proxy: { enabled: false } },
+      settings: { hideUnconfiguredModels: true },
       favorites: [],
       telemetry: { enabled: null, consentVersion: 0, anonymousId: null },
       endpointInstalls: [
@@ -1764,62 +1662,36 @@ describe('token-usage-reader', () => {
   it('loadTokenUsageByProviderModel aggregates tokens per exact provider/model pair', () => {
     const dir = join(tmpdir(), `fcm-token-usage-${process.pid}-${Date.now()}`)
     mkdirSync(dir, { recursive: true })
-    const logFile = join(dir, 'request-log.jsonl')
+    const statsFile = join(dir, 'token-stats.json')
 
     try {
-      writeFileSync(logFile, [
-        JSON.stringify({ timestamp: new Date().toISOString(), providerKey: 'groq', modelId: 'openai/gpt-oss-120b', promptTokens: 1200, completionTokens: 300 }),
-        JSON.stringify({ timestamp: new Date().toISOString(), providerKey: 'groq', modelId: 'openai/gpt-oss-120b', promptTokens: 200, completionTokens: 100 }),
-        JSON.stringify({ timestamp: new Date().toISOString(), providerKey: 'nvidia', modelId: 'openai/gpt-oss-120b', promptTokens: 5000, completionTokens: 500 }),
-      ].join('\n') + '\n')
+      writeFileSync(statsFile, JSON.stringify({
+        byAccount: {
+          'groq/openai-gpt-oss-120b/0': { tokens: 1500 },
+          'groq/openai-gpt-oss-120b/1': { tokens: 300 },
+          'nvidia/openai-gpt-oss-120b/0': { tokens: 5500 },
+        },
+      }, null, 2))
 
-      const totals = loadTokenUsageByProviderModel({ logFile, limit: 100 })
-      assert.equal(totals['groq::openai/gpt-oss-120b'], 1800)
-      assert.equal(totals['nvidia::openai/gpt-oss-120b'], 5500)
+      const totals = loadTokenUsageByProviderModel({ statsFile })
+      assert.equal(totals['groq::openai-gpt-oss-120b'], 1800)
+      assert.equal(totals['nvidia::openai-gpt-oss-120b'], 5500)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 })
 
-describe('request log parsing', () => {
-  it('parses proxy switch metadata for fallback rows', () => {
-    const row = parseLogLine(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      providerKey: 'groq',
-      modelId: 'openai/gpt-oss-120b',
-      requestedModelId: 'deepseek-v3-1',
-      switched: true,
-      switchReason: '429',
-      switchedFromProviderKey: 'nvidia',
-      switchedFromModelId: 'deepseek-ai/deepseek-v3.1',
-      statusCode: 200,
-      promptTokens: 120,
-      completionTokens: 30,
-      latencyMs: 456,
-    }))
-
-    assert.ok(row)
-    assert.equal(row.requestedModel, 'deepseek-v3-1')
-    assert.equal(row.model, 'openai/gpt-oss-120b')
-    assert.equal(row.switched, true)
-    assert.equal(row.switchReason, '429')
-    assert.equal(row.switchedFromProvider, 'nvidia')
-    assert.equal(row.switchedFromModel, 'deepseek-ai/deepseek-v3.1')
-  })
-})
-
 describe('/testfcm helpers', () => {
   it('normalizes common tool aliases to canonical launcher modes', () => {
-    assert.equal(normalizeTestfcmToolName('claude'), 'claude-code')
-    assert.equal(normalizeTestfcmToolName('clAudeCode'), 'claude-code')
+    assert.equal(normalizeTestfcmToolName('opencodecli'), 'opencode')
     assert.equal(normalizeTestfcmToolName('crush'), 'crush')
   })
 
   it('resolves a known tool spec and keeps its CLI flag', () => {
-    const spec = resolveTestfcmToolSpec('codex')
-    assert.equal(spec?.mode, 'codex')
-    assert.equal(spec?.flag, '--codex')
+    const spec = resolveTestfcmToolSpec('goose')
+    assert.equal(spec?.mode, 'goose')
+    assert.equal(spec?.flag, '--goose')
   })
 
   it('treats string and array API key entries as configured only when non-empty', () => {
@@ -1830,12 +1702,22 @@ describe('/testfcm helpers', () => {
   })
 
   it('builds compact run ids from timestamps', () => {
-    assert.equal(createTestfcmRunId(new Date('2026-03-16T18:45:12.000Z')), '20260316-184512')
+    assert.equal(createTestfcmRunId(new Date('2026-03-16T18:45:12.345Z')), '20260316-184512-345')
   })
 
   it('extracts JSON arrays from mixed stdout text', () => {
     const parsed = extractJsonPayload('  ⚡ Pinging models...\n\n[\n  {"label":"Model A"}\n]\n')
     assert.deepEqual(parsed, [{ label: 'Model A' }])
+  })
+
+  it('picks the first clearly healthy preflight row before pressing Enter', () => {
+    const index = pickTestfcmSelectionIndex([
+      { status: 'down', httpCode: 'ERR' },
+      { status: 'up', httpCode: '401' },
+      { status: 'up', httpCode: '200' },
+      { status: 'up', httpCode: '200' },
+    ])
+    assert.equal(index, 2)
   })
 
   it('classifies a successful assistant transcript', () => {
@@ -1851,6 +1733,13 @@ describe('/testfcm helpers', () => {
     assert.match(buildFixTasks(result.findings)[0] || '', /Validate the provider key/i)
   })
 
+  it('flags PTY width warnings as actionable harness failures', () => {
+    const result = classifyToolTranscript('Please maximize your terminal for optimal use. The current terminal is too small.')
+    assert.equal(result.status, 'failed')
+    assert.equal(result.findings[0]?.id, 'terminal_too_small')
+    assert.match(buildFixTasks(result.findings)[0] || '', /width warning disabled|wider PTY/i)
+  })
+
   it('stays inconclusive when no success or known failure pattern exists', () => {
     const result = classifyToolTranscript('Tool opened, waiting for model...')
     assert.equal(result.status, 'inconclusive')
@@ -1858,101 +1747,133 @@ describe('/testfcm helpers', () => {
   })
 })
 
-describe('proxy launcher model ids', () => {
-  it('uses the merged proxy slug for proxy-backed launcher flows', () => {
-    const mergedModels = buildMergedModels(MODELS)
-    const mergedModelByLabel = new Map(mergedModels.map(model => [model.label, model]))
-    setOpenCodeModelData(mergedModels, mergedModelByLabel)
-
-    const resolved = resolveLauncherModelId({
-      modelId: 'openai/gpt-oss-120b',
-      label: 'GPT OSS 120B',
-      providerKey: 'nvidia',
-    }, true)
-
-    assert.equal(resolved, 'gpt-oss-120b')
-  })
-
-  it('keeps the provider-specific model id when proxy is disabled', () => {
-    const resolved = resolveLauncherModelId({
-      modelId: 'deepseek-ai/deepseek-v3.1',
-      label: 'DeepSeek V3.1',
-      providerKey: 'nvidia',
-    }, false)
-
-    assert.equal(resolved, 'deepseek-ai/deepseek-v3.1')
-  })
-})
-
 describe('tool launcher env building', () => {
-  it('sanitizes conflicting Anthropic/OpenAI vars for Claude proxy launches', () => {
+  it('sanitizes inherited OpenAI-compatible vars for direct launches', () => {
     const config = { apiKeys: { nvidia: 'nvapi-test' } }
     const model = { providerKey: 'nvidia', modelId: 'openai/gpt-oss-120b' }
     const inheritedEnv = {
-      ANTHROPIC_API_KEY: 'stale-api-key',
-      ANTHROPIC_AUTH_TOKEN: 'stale-auth-token',
       OPENAI_API_KEY: 'stale-openai-key',
       OPENAI_BASE_URL: 'https://old.example/v1',
       PATH: process.env.PATH || '',
     }
 
-    const { env } = buildToolEnv('claude-code', model, config, {
+    const { env } = buildToolEnv('crush', model, config, {
       sanitize: true,
-      includeCompatDefaults: false,
+      includeCompatDefaults: true,
       includeProviderEnv: false,
       inheritedEnv,
     })
 
-    assert.equal(env.ANTHROPIC_API_KEY, undefined)
-    assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'nvapi-test')
-    assert.equal(env.ANTHROPIC_MODEL, undefined)
-    assert.equal(env.OPENAI_API_KEY, undefined)
-    assert.equal(env.OPENAI_BASE_URL, undefined)
+    assert.equal(env.OPENAI_API_KEY, 'nvapi-test')
+    assert.match(env.OPENAI_BASE_URL || '', /integrate\.api\.nvidia\.com/)
+    assert.equal(env.LLM_MODEL, 'openai/openai/gpt-oss-120b')
   })
 
-  it('builds explicit custom-provider args for Codex proxy launches', () => {
-    const joined = buildCodexProxyArgs('http://127.0.0.1:18045/v1').join(' ')
-
-    assert.match(joined, /model_provider="fcm_proxy"/)
-    assert.match(joined, /model_providers\.fcm_proxy\.env_key="FCM_PROXY_API_KEY"/)
-    assert.match(joined, /model_providers\.fcm_proxy\.wire_api="responses"/)
-    assert.match(joined, /127\.0\.0\.1:18045\/v1/)
-  })
-
-  it('forces Claude proxy launches onto a real Claude alias instead of an FCM slug', () => {
-    assert.deepEqual(buildClaudeProxyArgs(), ['--model', 'sonnet'])
-  })
-
-  it('extracts Gemini config validation errors from CLI output', () => {
-    const output = [
-      'Invalid configuration in /Users/vava/.gemini/settings.json:',
-      '',
-      'Error in: mcpServers.context7',
-      "    Unrecognized key(s) in object: 'disabled'",
-    ].join('\n')
-
-    const error = extractGeminiConfigError(output)
-    assert.match(error || '', /Invalid configuration/)
-    assert.match(error || '', /mcpServers\.context7/)
+  it('keeps launcher model ids provider-native in direct mode', () => {
+    assert.equal(resolveLauncherModelId({ modelId: 'deepseek-ai/deepseek-v3.1' }), 'deepseek-ai/deepseek-v3.1')
   })
 })
 
-describe('proxy sync target resolution', () => {
-  it('follows the current tool mode instead of a stored activeTool selector', () => {
-    assert.equal(resolveProxySyncToolMode('opencode-desktop'), 'opencode')
-    assert.equal(resolveProxySyncToolMode('claude-code'), 'claude-code')
-    assert.equal(resolveProxySyncToolMode('codex'), 'codex')
-    assert.equal(resolveProxySyncToolMode('gemini'), null)
+describe('tool launch preparation', () => {
+  function createToolPaths(dir) {
+    return {
+      aiderConfigPath: join(dir, 'aider', '.aider.conf.yml'),
+      crushConfigPath: join(dir, 'crush', 'crush.json'),
+      gooseProvidersDir: join(dir, 'goose', 'custom_providers'),
+      gooseSecretsPath: join(dir, 'goose', 'secrets.yaml'),
+      gooseConfigPath: join(dir, 'goose', 'config.yaml'),
+      qwenConfigPath: join(dir, 'qwen', 'settings.json'),
+      ampConfigPath: join(dir, 'amp', 'settings.json'),
+      piModelsPath: join(dir, 'pi', 'models.json'),
+      piSettingsPath: join(dir, 'pi', 'settings.json'),
+      openHandsEnvPath: join(dir, '.fcm-openhands-env'),
+    }
+  }
+
+  it('persists the selected model into every external tool before launch', () => {
+    const dir = join(tmpdir(), `fcm-tool-launch-${process.pid}-${Date.now()}`)
+    mkdirSync(dir, { recursive: true })
+    const paths = createToolPaths(dir)
+    const config = { apiKeys: { nvidia: 'nvapi-test' } }
+    const model = { providerKey: 'nvidia', modelId: 'deepseek-ai/deepseek-v3.2', label: 'DeepSeek V3.2' }
+
+    try {
+      const aiderPlan = prepareExternalToolLaunch('aider', model, config, { paths, inheritedEnv: { PATH: process.env.PATH || '' } })
+      assert.equal(aiderPlan.command, 'aider')
+      assert.deepEqual(aiderPlan.args, ['--model', 'openai/deepseek-ai/deepseek-v3.2'])
+      assert.match(readFileSync(paths.aiderConfigPath, 'utf8'), /model: openai\/deepseek-ai\/deepseek-v3\.2/)
+
+      const crushPlan = prepareExternalToolLaunch('crush', model, config, { paths, inheritedEnv: { PATH: process.env.PATH || '' } })
+      const crushConfig = JSON.parse(readFileSync(paths.crushConfigPath, 'utf8'))
+      assert.equal(crushPlan.command, 'crush')
+      assert.equal(crushConfig.models.large.model, 'deepseek-ai/deepseek-v3.2')
+      assert.equal(crushConfig.models.large.provider, 'freeCodingModels')
+      assert.equal(crushConfig.models.small.model, 'deepseek-ai/deepseek-v3.2')
+
+      const goosePlan = prepareExternalToolLaunch('goose', model, config, { paths, inheritedEnv: { PATH: process.env.PATH || '' } })
+      const gooseConfig = readFileSync(paths.gooseConfigPath, 'utf8')
+      assert.equal(goosePlan.command, 'goose')
+      assert.match(gooseConfig, /GOOSE_PROVIDER: fcm-nvidia/)
+      assert.match(gooseConfig, /GOOSE_MODEL: deepseek-ai\/deepseek-v3\.2/)
+
+      const qwenPlan = prepareExternalToolLaunch('qwen', model, config, { paths, inheritedEnv: { PATH: process.env.PATH || '' } })
+      const qwenConfig = JSON.parse(readFileSync(paths.qwenConfigPath, 'utf8'))
+      assert.equal(qwenPlan.command, 'qwen')
+      assert.equal(qwenConfig.model, 'deepseek-ai/deepseek-v3.2')
+      assert.equal(qwenConfig.modelProviders.openai[0].id, 'deepseek-ai/deepseek-v3.2')
+
+      const openHandsPlan = prepareExternalToolLaunch('openhands', model, config, { paths, inheritedEnv: { PATH: process.env.PATH || '' } })
+      const openHandsEnv = readFileSync(paths.openHandsEnvPath, 'utf8')
+      assert.equal(openHandsPlan.command, 'openhands')
+      assert.deepEqual(openHandsPlan.args, ['--override-with-envs'])
+      assert.match(openHandsEnv, /OPENAI_MODEL="deepseek-ai\/deepseek-v3\.2"/)
+      assert.match(openHandsEnv, /LLM_MODEL="openai\/deepseek-ai\/deepseek-v3\.2"/)
+
+      const ampPlan = prepareExternalToolLaunch('amp', model, config, { paths, inheritedEnv: { PATH: process.env.PATH || '' } })
+      const ampConfig = JSON.parse(readFileSync(paths.ampConfigPath, 'utf8'))
+      assert.equal(ampPlan.command, 'amp')
+      assert.equal(ampConfig['amp.model'], 'deepseek-ai/deepseek-v3.2')
+
+      const piPlan = prepareExternalToolLaunch('pi', model, config, { paths, inheritedEnv: { PATH: process.env.PATH || '' } })
+      const piModels = JSON.parse(readFileSync(paths.piModelsPath, 'utf8'))
+      const piSettings = JSON.parse(readFileSync(paths.piSettingsPath, 'utf8'))
+      assert.equal(piPlan.command, 'pi')
+      assert.deepEqual(piPlan.args, ['--provider', 'freeCodingModels', '--model', 'deepseek-ai/deepseek-v3.2', '--api-key', piPlan.apiKey])
+      assert.equal(piModels.providers.freeCodingModels.models[0].id, 'deepseek-ai/deepseek-v3.2')
+      assert.equal(piSettings.defaultModel, 'deepseek-ai/deepseek-v3.2')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('openclaw selected model persistence', () => {
+  it('writes the selected provider/model as the OpenClaw default instead of forcing nvidia', async () => {
+    const dir = join(tmpdir(), `fcm-openclaw-launch-${process.pid}-${Date.now()}`)
+    mkdirSync(dir, { recursive: true })
+    const openclawConfigPath = join(dir, 'openclaw', 'openclaw.json')
+    const config = { apiKeys: { groq: 'gsk-test' } }
+    const model = { providerKey: 'groq', modelId: 'openai/gpt-oss-120b', label: 'GPT OSS 120B' }
+
+    try {
+      const result = await startOpenClaw(model, config, { paths: { openclawConfigPath } })
+      const written = JSON.parse(readFileSync(openclawConfigPath, 'utf8'))
+
+      assert.equal(result?.providerId, 'fcm-groq')
+      assert.equal(written.agents.defaults.model.primary, 'fcm-groq/openai/gpt-oss-120b')
+      assert.equal(Boolean(written.models.providers['fcm-groq']), true)
+      assert.equal(written.models.providers['fcm-groq'].models[0].id, 'openai/gpt-oss-120b')
+      assert.equal(written.env.GROQ_API_KEY, 'gsk-test')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
 describe('endpoint install tracking', () => {
-  it('keeps launcher-only tools out of the Y install target list', () => {
+  it('exposes only persisted-config install targets in the Y install list', () => {
     const installTargets = getInstallTargetModes()
-    assert.ok(!installTargets.includes('claude-code'))
-    assert.ok(!installTargets.includes('codex'))
-    assert.ok(!installTargets.includes('gemini'))
-    assert.ok(installTargets.includes('openhands'))
+    assert.deepEqual(installTargets, ['opencode', 'opencode-desktop', 'openclaw', 'crush', 'goose', 'pi', 'aider', 'qwen', 'openhands', 'amp'])
   })
 
   it('normalizes tracked installs to canonical shape', () => {
@@ -2093,6 +2014,189 @@ describe('endpoint installer', () => {
   })
 })
 
+describe('legacy proxy cleanup', () => {
+  function createCleanupFixtureDir() {
+    const dir = join(tmpdir(), `fcm-legacy-cleanup-${process.pid}-${Date.now()}`)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  it('removes discontinued proxy fields from the main config while preserving direct installs', () => {
+    const homeDir = createCleanupFixtureDir()
+    const configPath = join(homeDir, '.free-coding-models.json')
+    const opencodeConfigPath = join(homeDir, '.config', 'opencode', 'opencode.json')
+    mkdirSync(dirname(opencodeConfigPath), { recursive: true })
+
+    try {
+      writeFileSync(configPath, JSON.stringify({
+        apiKeys: { nvidia: 'nvapi-test' },
+        providers: {},
+        settings: {
+          preferredToolMode: 'claude-code',
+          proxy: { enabled: true },
+        },
+        proxySettings: { enabled: true },
+        endpointInstalls: [
+          { providerKey: 'nvidia', toolMode: 'claude-code', scope: 'all', modelIds: [] },
+          { providerKey: 'nvidia', toolMode: 'opencode', scope: 'selected', modelIds: ['deepseek-ai/deepseek-v3.2'] },
+        ],
+      }, null, 2))
+
+      writeFileSync(opencodeConfigPath, JSON.stringify({
+        provider: {
+          'fcm-proxy': { options: { apiKey: 'legacy' } },
+          'fcm-nvidia': { options: { apiKey: 'nvapi-test' } },
+        },
+        model: 'fcm-proxy/deepseek-ai/deepseek-v3.2',
+      }, null, 2))
+
+      const summary = cleanupLegacyProxyArtifacts({
+        homeDir,
+        paths: {
+          configPath,
+          opencodeConfigPath,
+          shellProfilePaths: [],
+        },
+      })
+
+      const nextConfig = JSON.parse(readFileSync(configPath, 'utf8'))
+      const nextOpencode = JSON.parse(readFileSync(opencodeConfigPath, 'utf8'))
+
+      assert.equal(summary.changed, true)
+      assert.equal('proxySettings' in nextConfig, false)
+      assert.equal('proxy' in nextConfig.settings, false)
+      assert.equal(nextConfig.settings.preferredToolMode, 'opencode')
+      assert.deepEqual(nextConfig.endpointInstalls, [
+        { providerKey: 'nvidia', toolMode: 'opencode', scope: 'selected', modelIds: ['deepseek-ai/deepseek-v3.2'] },
+      ])
+      assert.equal(Boolean(nextOpencode.provider['fcm-proxy']), false)
+      assert.equal(Boolean(nextOpencode.provider['fcm-nvidia']), true)
+      assert.equal('model' in nextOpencode, false)
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+
+  it('removes proxy-only env files and shell sourcing lines', () => {
+    const homeDir = createCleanupFixtureDir()
+    const envPath = join(homeDir, '.fcm-claude-code-env')
+    const envBackupPath = `${envPath}.bak`
+    const zshrcPath = join(homeDir, '.zshrc')
+
+    try {
+      writeFileSync(envPath, 'export ANTHROPIC_BASE_URL=http://127.0.0.1:18045/v1\n')
+      writeFileSync(envBackupPath, 'backup\n')
+      writeFileSync(zshrcPath, [
+        '# 📖 FCM Proxy — Claude Code env vars',
+        'source "$HOME/.fcm-claude-code-env"',
+        'export PATH="$HOME/bin:$PATH"',
+      ].join('\n'))
+
+      const summary = cleanupLegacyProxyArtifacts({
+        homeDir,
+        paths: {
+          shellProfilePaths: [zshrcPath],
+        },
+      })
+
+      const nextZshrc = readFileSync(zshrcPath, 'utf8')
+      assert.equal(summary.changed, true)
+      assert.equal(existsSync(envPath), false)
+      assert.equal(existsSync(envBackupPath), false)
+      assert.doesNotMatch(nextZshrc, /\.fcm-claude-code-env/)
+      assert.match(nextZshrc, /export PATH=/)
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+
+  it('removes legacy Goose and Qwen proxy entries but keeps direct providers', () => {
+    const homeDir = createCleanupFixtureDir()
+    const gooseProvidersDir = join(homeDir, '.config', 'goose', 'custom_providers')
+    const gooseSecretsPath = join(homeDir, '.config', 'goose', 'secrets.yaml')
+    const gooseConfigPath = join(homeDir, '.config', 'goose', 'config.yaml')
+    const qwenConfigPath = join(homeDir, '.qwen', 'settings.json')
+    mkdirSync(gooseProvidersDir, { recursive: true })
+    mkdirSync(dirname(qwenConfigPath), { recursive: true })
+
+    try {
+      writeFileSync(join(gooseProvidersDir, 'fcm-proxy.json'), '{}\n')
+      writeFileSync(join(gooseProvidersDir, 'fcm-nvidia.json'), '{}\n')
+      writeFileSync(gooseSecretsPath, [
+        `FCM_PROXY_API_KEY: ${JSON.stringify('legacy-secret')}`,
+        `FCM_NVIDIA_API_KEY: ${JSON.stringify('direct-secret')}`,
+      ].join('\n'))
+      writeFileSync(gooseConfigPath, [
+        'GOOSE_PROVIDER: fcm-proxy',
+        'GOOSE_MODEL: fcm-proxy/deepseek-ai/deepseek-v3.2',
+        'OTHER_SETTING: keep-me',
+      ].join('\n'))
+      writeFileSync(qwenConfigPath, JSON.stringify({
+        modelProviders: {
+          openai: [
+            { id: 'fcm-proxy/deepseek-ai/deepseek-v3.2', envKey: 'FCM_PROXY_API_KEY', baseUrl: 'http://127.0.0.1:18045/v1' },
+            { id: 'fcm-nvidia/deepseek-ai/deepseek-v3.2', envKey: 'FCM_NVIDIA_API_KEY', baseUrl: 'https://integrate.api.nvidia.com/v1' },
+          ],
+        },
+        model: 'fcm-proxy/deepseek-ai/deepseek-v3.2',
+      }, null, 2))
+
+      cleanupLegacyProxyArtifacts({
+        homeDir,
+        paths: {
+          gooseProvidersDir,
+          gooseSecretsPath,
+          gooseConfigPath,
+          qwenConfigPath,
+          shellProfilePaths: [],
+        },
+      })
+
+      const nextSecrets = readFileSync(gooseSecretsPath, 'utf8')
+      const nextGooseConfig = readFileSync(gooseConfigPath, 'utf8')
+      const nextQwenConfig = JSON.parse(readFileSync(qwenConfigPath, 'utf8'))
+
+      assert.equal(existsSync(join(gooseProvidersDir, 'fcm-proxy.json')), false)
+      assert.equal(existsSync(join(gooseProvidersDir, 'fcm-nvidia.json')), true)
+      assert.doesNotMatch(nextSecrets, /FCM_PROXY_API_KEY/)
+      assert.match(nextSecrets, /FCM_NVIDIA_API_KEY/)
+      assert.doesNotMatch(nextGooseConfig, /GOOSE_PROVIDER:\s*fcm-proxy/)
+      assert.match(nextGooseConfig, /OTHER_SETTING: keep-me/)
+      assert.deepEqual(nextQwenConfig.modelProviders.openai, [
+        { id: 'fcm-nvidia/deepseek-ai/deepseek-v3.2', envKey: 'FCM_NVIDIA_API_KEY', baseUrl: 'https://integrate.api.nvidia.com/v1' },
+      ])
+      assert.equal('model' in nextQwenConfig, false)
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a direct OpenHands env file but removes the old localhost proxy variant', () => {
+    const homeDir = createCleanupFixtureDir()
+    const openHandsEnvPath = join(homeDir, '.fcm-openhands-env')
+
+    try {
+      writeFileSync(openHandsEnvPath, [
+        'export OPENAI_API_KEY=direct-key',
+        'export OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1',
+      ].join('\n'))
+
+      cleanupLegacyProxyArtifacts({ homeDir, paths: { shellProfilePaths: [] } })
+      assert.equal(existsSync(openHandsEnvPath), true)
+
+      writeFileSync(openHandsEnvPath, [
+        '# FCM Proxy V2',
+        'export OPENAI_BASE_URL=http://127.0.0.1:18045/v1',
+      ].join('\n'))
+
+      cleanupLegacyProxyArtifacts({ homeDir, paths: { shellProfilePaths: [] } })
+      assert.equal(existsSync(openHandsEnvPath), false)
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+})
+
 // ─── Dynamic OpenRouter model discovery (MODELS mutation) ────────────────────
 // 📖 Tests that verify the MODELS array mutation logic used by fetchOpenRouterFreeModels
 describe('Dynamic OpenRouter MODELS mutation', () => {
@@ -2122,451 +2226,5 @@ describe('Dynamic OpenRouter MODELS mutation', () => {
     // Remove it
     MODELS.splice(MODELS.length - 1, 1)
     assert.equal(MODELS.length, originalLength)
-  })
-})
-
-// ─── Anthropic Translator ─────────────────────────────────────────────────────
-// 📖 Tests for bidirectional Anthropic ↔ OpenAI wire format translation
-
-import { translateAnthropicToOpenAI, translateOpenAIToAnthropic } from '../src/anthropic-translator.js'
-
-describe('Anthropic Translator', () => {
-  it('translates simple Anthropic request to OpenAI format', () => {
-    const anthropic = {
-      model: 'deepseek-v3',
-      system: 'You are a helpful assistant.',
-      messages: [{ role: 'user', content: 'Hello' }],
-      max_tokens: 1024,
-      stream: false,
-    }
-    const openai = translateAnthropicToOpenAI(anthropic)
-    assert.equal(openai.model, 'deepseek-v3')
-    assert.equal(openai.max_tokens, 1024)
-    assert.equal(openai.stream, false)
-    assert.equal(openai.messages.length, 2) // system + user
-    assert.equal(openai.messages[0].role, 'system')
-    assert.equal(openai.messages[0].content, 'You are a helpful assistant.')
-    assert.equal(openai.messages[1].role, 'user')
-    assert.equal(openai.messages[1].content, 'Hello')
-  })
-
-  it('translates Anthropic system as array of content blocks', () => {
-    const anthropic = {
-      model: 'test',
-      system: [{ type: 'text', text: 'Part 1' }, { type: 'text', text: 'Part 2' }],
-      messages: [{ role: 'user', content: 'Hi' }],
-    }
-    const openai = translateAnthropicToOpenAI(anthropic)
-    assert.equal(openai.messages[0].role, 'system')
-    assert.equal(openai.messages[0].content, 'Part 1\n\nPart 2')
-  })
-
-  it('translates Anthropic content blocks to OpenAI messages', () => {
-    const anthropic = {
-      model: 'test',
-      messages: [{
-        role: 'user',
-        content: [{ type: 'text', text: 'What is 2+2?' }]
-      }],
-    }
-    const openai = translateAnthropicToOpenAI(anthropic)
-    assert.equal(openai.messages[0].content, 'What is 2+2?')
-  })
-
-  it('maps Anthropic tools to OpenAI function tools', () => {
-    const anthropic = {
-      model: 'test',
-      messages: [{ role: 'user', content: 'Use a tool' }],
-      tools: [{
-        name: 'read_file',
-        description: 'Read a file from disk',
-        input_schema: { type: 'object', properties: { path: { type: 'string' } } }
-      }],
-    }
-    const openai = translateAnthropicToOpenAI(anthropic)
-    assert.equal(openai.tools.length, 1)
-    assert.equal(openai.tools[0].type, 'function')
-    assert.equal(openai.tools[0].function.name, 'read_file')
-  })
-
-  it('translates OpenAI response to Anthropic format', () => {
-    const openai = {
-      id: 'chatcmpl-123',
-      choices: [{
-        message: { role: 'assistant', content: 'Hello! How can I help?' },
-        finish_reason: 'stop',
-      }],
-      usage: { prompt_tokens: 10, completion_tokens: 8 },
-    }
-    const anthropic = translateOpenAIToAnthropic(openai, 'deepseek-v3')
-    assert.equal(anthropic.type, 'message')
-    assert.equal(anthropic.role, 'assistant')
-    assert.equal(anthropic.content.length, 1)
-    assert.equal(anthropic.content[0].type, 'text')
-    assert.equal(anthropic.content[0].text, 'Hello! How can I help?')
-    assert.equal(anthropic.stop_reason, 'end_turn')
-    assert.equal(anthropic.usage.input_tokens, 10)
-    assert.equal(anthropic.usage.output_tokens, 8)
-    assert.equal(anthropic.model, 'deepseek-v3')
-  })
-
-  it('translates tool_calls finish_reason to tool_use stop_reason', () => {
-    const openai = {
-      choices: [{
-        message: {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{ id: 'tc_1', function: { name: 'read_file', arguments: '{"path":"test.js"}' } }]
-        },
-        finish_reason: 'tool_calls',
-      }],
-      usage: { prompt_tokens: 5, completion_tokens: 15 },
-    }
-    const anthropic = translateOpenAIToAnthropic(openai, 'test')
-    assert.equal(anthropic.stop_reason, 'tool_use')
-    assert.equal(anthropic.content.length, 1) // tool_use block
-    assert.equal(anthropic.content[0].type, 'tool_use')
-    assert.equal(anthropic.content[0].name, 'read_file')
-    assert.deepEqual(anthropic.content[0].input, { path: 'test.js' })
-  })
-
-  it('maps stop_sequences from Anthropic to OpenAI stop param', () => {
-    const openai = translateAnthropicToOpenAI({
-      model: 'test',
-      messages: [{ role: 'user', content: 'Hi' }],
-      stop_sequences: ['</answer>', '\n\nHuman:']
-    })
-    assert.deepEqual(openai.stop, ['</answer>', '\n\nHuman:'])
-  })
-})
-
-// ─── Proxy Topology ────────────────────────────────────────────────────────────
-// 📖 Tests for shared proxy topology builder
-
-import { buildProxyTopologyFromConfig } from '../src/proxy-topology.js'
-
-describe('Proxy Topology', () => {
-  it('builds empty topology with no API keys', () => {
-    const mergedModels = [{
-      slug: 'test-model',
-      label: 'Test Model',
-      providers: [{ providerKey: 'nvidia', modelId: 'nvidia/test' }],
-    }]
-    const sourcesMap = { nvidia: { url: 'https://api.nvidia.com/v1/chat/completions' } }
-    const { accounts, proxyModels } = buildProxyTopologyFromConfig({ apiKeys: {} }, mergedModels, sourcesMap)
-    assert.equal(accounts.length, 0)
-    assert.equal(Object.keys(proxyModels).length, 1)
-    assert.equal(proxyModels['test-model'].name, 'Test Model')
-  })
-
-  it('builds accounts from configured API keys', () => {
-    const mergedModels = [{
-      slug: 'deepseek-v3',
-      label: 'DeepSeek V3',
-      providers: [{ providerKey: 'nvidia', modelId: 'nvidia/deepseek-v3' }],
-    }]
-    const sourcesMap = { nvidia: { url: 'https://integrate.api.nvidia.com/v1/chat/completions' } }
-    const config = { apiKeys: { nvidia: 'nvapi-test' } }
-    const { accounts } = buildProxyTopologyFromConfig(config, mergedModels, sourcesMap)
-    assert.equal(accounts.length, 1)
-    assert.equal(accounts[0].id, 'nvidia/deepseek-v3/0')
-    assert.equal(accounts[0].apiKey, 'nvapi-test')
-    assert.equal(accounts[0].url, 'https://integrate.api.nvidia.com/v1')
-  })
-
-  it('creates multiple accounts for multi-key providers', () => {
-    const mergedModels = [{
-      slug: 'test',
-      label: 'Test',
-      providers: [{ providerKey: 'nvidia', modelId: 'nvidia/test' }],
-    }]
-    const sourcesMap = { nvidia: { url: 'https://api.nvidia.com/v1/chat/completions' } }
-    const config = { apiKeys: { nvidia: ['key1', 'key2', 'key3'] } }
-    const { accounts } = buildProxyTopologyFromConfig(config, mergedModels, sourcesMap)
-    assert.equal(accounts.length, 3)
-    assert.equal(accounts[0].apiKey, 'key1')
-    assert.equal(accounts[2].apiKey, 'key3')
-  })
-})
-
-// ─── Daemon Manager ──────────────────────────────────────────────────────────
-describe('Daemon Manager', () => {
-  it('getPlatformSupport returns supported for darwin or linux', async () => {
-    const { getPlatformSupport } = await import('../src/daemon-manager.js')
-    const result = getPlatformSupport()
-    if (process.platform === 'darwin') {
-      assert.equal(result.supported, true)
-      assert.equal(result.platform, 'macos')
-    } else if (process.platform === 'linux') {
-      assert.equal(result.supported, true)
-      assert.equal(result.platform, 'linux')
-    }
-  })
-
-  it('installDaemon blocks in dev environment (has .git)', async () => {
-    const { installDaemon } = await import('../src/daemon-manager.js')
-    const result = installDaemon()
-    // 📖 Since we're running from the repo (has .git), install should be blocked
-    assert.equal(result.success, false)
-    assert.ok(result.error.includes('dev checkout'))
-  })
-
-  it('getDaemonInfo returns null when no daemon.json exists', async () => {
-    const { getDaemonInfo } = await import('../src/daemon-manager.js')
-    // 📖 In test environment daemon.json shouldn't exist
-    const info = getDaemonInfo()
-    // 📖 Could be null or an object if daemon is actually running — just check type
-    assert.ok(info === null || typeof info === 'object')
-  })
-
-  it('stopDaemon returns error when no daemon running', async () => {
-    const { stopDaemon, getDaemonInfo } = await import('../src/daemon-manager.js')
-    // 📖 Only test when daemon is NOT running (don't kill real daemons)
-    const info = getDaemonInfo()
-    if (!info) {
-      const result = stopDaemon()
-      assert.equal(result.success, false)
-      assert.ok(result.error.includes('No daemon'))
-    }
-  })
-
-  it('killDaemonProcess returns error when no daemon PID found', async () => {
-    const { killDaemonProcess, getDaemonInfo } = await import('../src/daemon-manager.js')
-    const info = getDaemonInfo()
-    if (!info) {
-      const result = killDaemonProcess()
-      assert.equal(result.success, false)
-      assert.ok(result.error.includes('No daemon'))
-    }
-  })
-
-  it('getVersionMismatch returns null when no daemon running', async () => {
-    const { getVersionMismatch, getDaemonInfo } = await import('../src/daemon-manager.js')
-    const info = getDaemonInfo()
-    if (!info) {
-      const result = getVersionMismatch()
-      assert.equal(result, null)
-    }
-  })
-})
-
-// ─── Error Handling Hardening ────────────────────────────────────────────────
-// 📖 Tests for the hardened error handling added in the proxy/daemon audit
-
-import { ProxyServer } from '../src/proxy-server.js'
-import { AccountManager } from '../src/account-manager.js'
-import { createAnthropicSSETransformer } from '../src/anthropic-translator.js'
-
-describe('readBody size limit (A1)', () => {
-  it('returns 413 for oversized request body', async () => {
-    const proxy = new ProxyServer({ port: 0, accounts: [], proxyApiKey: 'test-key' })
-    const { port } = await proxy.start()
-    try {
-      const http = await import('node:http')
-      const result = await new Promise((resolve) => {
-        const req = http.default.request({
-          hostname: '127.0.0.1',
-          port,
-          path: '/v1/chat/completions',
-          method: 'POST',
-          headers: {
-            'authorization': 'Bearer test-key',
-            'content-type': 'application/json',
-          },
-        }, res => {
-          const chunks = []
-          res.on('data', c => chunks.push(c))
-          res.on('end', () => resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks).toString() }))
-        })
-        // 📖 Handle connection reset (server destroys the request socket)
-        req.on('error', () => {
-          // 📖 Server destroyed the connection — that's the expected behavior for oversized bodies
-          resolve({ statusCode: 413, body: '{"error":"Request body too large"}' })
-        })
-        // 📖 Send 11 MB of data to trigger the 413 limit (MAX_BODY_SIZE = 10 MB)
-        const bigChunk = Buffer.alloc(1024 * 1024, 'x') // 1 MB
-        for (let i = 0; i < 11; i++) req.write(bigChunk)
-        req.end()
-      })
-      assert.equal(result.statusCode, 413)
-      const body = JSON.parse(result.body)
-      assert.equal(body.error, 'Request body too large')
-    } finally {
-      await proxy.stop()
-    }
-  })
-})
-
-describe('Empty choices fallback (A10)', () => {
-  it('translateOpenAIToAnthropic returns fallback text block for empty choices', () => {
-    const response = { id: 'test', choices: [], usage: { prompt_tokens: 5, completion_tokens: 0 } }
-    const result = translateOpenAIToAnthropic(response, 'test-model')
-    assert.equal(result.content.length, 1)
-    assert.equal(result.content[0].type, 'text')
-    assert.equal(result.content[0].text, '')
-  })
-
-  it('translateOpenAIToAnthropic returns fallback for missing choices', () => {
-    const response = { id: 'test', usage: { prompt_tokens: 5, completion_tokens: 0 } }
-    const result = translateOpenAIToAnthropic(response, 'test-model')
-    assert.equal(result.content.length, 1)
-    assert.equal(result.content[0].type, 'text')
-  })
-})
-
-describe('SSE line buffering (A9)', () => {
-  it('Anthropic SSE transformer handles lines split across chunks', (t, done) => {
-    const { transform } = createAnthropicSSETransformer('test-model')
-    const outputs = []
-    transform.on('data', chunk => outputs.push(chunk.toString()))
-    transform.on('end', () => {
-      // 📖 Should have received message_start + content_block_start + content_block_delta + stop events
-      const combined = outputs.join('')
-      assert.ok(combined.includes('message_start'), 'should have message_start')
-      assert.ok(combined.includes('Hello world'), 'should have the full text delta')
-      done()
-    })
-
-    // 📖 Simulate a line split across two chunks
-    const fullLine = 'data: {"id":"1","choices":[{"delta":{"content":"Hello world"}}]}\n\n'
-    const splitPoint = Math.floor(fullLine.length / 2)
-    transform.write(fullLine.slice(0, splitPoint))
-    transform.write(fullLine.slice(splitPoint))
-    transform.write('data: [DONE]\n\n')
-    transform.end()
-  })
-})
-
-describe('Input validation translator (A14)', () => {
-  it('translateAnthropicToOpenAI handles null input', () => {
-    const result = translateAnthropicToOpenAI(null)
-    assert.deepEqual(result, { model: '', messages: [], stream: false })
-  })
-
-  it('translateAnthropicToOpenAI handles undefined input', () => {
-    const result = translateAnthropicToOpenAI(undefined)
-    assert.deepEqual(result, { model: '', messages: [], stream: false })
-  })
-
-  it('translateAnthropicToOpenAI handles missing messages array', () => {
-    const result = translateAnthropicToOpenAI({ model: 'test', system: 'Hi' })
-    assert.equal(result.model, 'test')
-    assert.ok(Array.isArray(result.messages))
-    assert.equal(result.messages.length, 1) // system message only
-    assert.equal(result.messages[0].role, 'system')
-  })
-})
-
-describe('API key trimming (A17)', () => {
-  it('trims whitespace from API keys in topology builder', () => {
-    const mergedModels = [{
-      slug: 'test-model',
-      label: 'Test',
-      providers: [{ providerKey: 'nvidia', modelId: 'nvidia/test' }],
-    }]
-    const sourcesMap = { nvidia: { url: 'https://api.nvidia.com/v1/chat/completions' } }
-    const config = { apiKeys: { nvidia: ['  key1  ', 'key2\n', '\tkey3\t'] } }
-    const { accounts } = buildProxyTopologyFromConfig(config, mergedModels, sourcesMap)
-    assert.equal(accounts.length, 3)
-    assert.equal(accounts[0].apiKey, 'key1')
-    assert.equal(accounts[1].apiKey, 'key2')
-    assert.equal(accounts[2].apiKey, 'key3')
-  })
-
-  it('filters out empty/whitespace-only API keys', () => {
-    const mergedModels = [{
-      slug: 'test',
-      label: 'Test',
-      providers: [{ providerKey: 'nvidia', modelId: 'nvidia/test' }],
-    }]
-    const sourcesMap = { nvidia: { url: 'https://api.nvidia.com/v1/chat/completions' } }
-    const config = { apiKeys: { nvidia: ['key1', '  ', '', 'key2'] } }
-    const { accounts } = buildProxyTopologyFromConfig(config, mergedModels, sourcesMap)
-    assert.equal(accounts.length, 2)
-  })
-})
-
-describe('Account cooldown on consecutive failures (Quick Win 3)', () => {
-  it('account enters cooldown after 3 consecutive non-429 failures', () => {
-    const accounts = [{ id: 'a1', providerKey: 'test', apiKey: 'k', modelId: 'm', url: 'http://x' }]
-    const mgr = new AccountManager(accounts)
-
-    // 📖 3 consecutive SERVER_ERROR failures should trigger cooldown
-    for (let i = 0; i < 3; i++) {
-      mgr.recordFailure('a1', { type: 'SERVER_ERROR', shouldRetry: true, skipAccount: false, retryAfterSec: null })
-    }
-
-    // 📖 Account should now be in cooldown and unavailable
-    const selected = mgr.selectAccount()
-    assert.equal(selected, null, 'account should be in cooldown after 3 failures')
-  })
-
-  it('cooldown resets on success', () => {
-    const accounts = [{ id: 'a1', providerKey: 'test', apiKey: 'k', modelId: 'm', url: 'http://x' }]
-    const mgr = new AccountManager(accounts)
-
-    // Trigger cooldown
-    for (let i = 0; i < 3; i++) {
-      mgr.recordFailure('a1', { type: 'SERVER_ERROR', shouldRetry: true, skipAccount: false, retryAfterSec: null })
-    }
-
-    // Record success — should clear cooldown
-    mgr.recordSuccess('a1', 100)
-
-    const selected = mgr.selectAccount()
-    assert.ok(selected !== null, 'account should be available after success clears cooldown')
-    assert.equal(selected.id, 'a1')
-  })
-})
-
-describe('Stats endpoint (Quick Win 2)', () => {
-  it('GET /v1/stats returns stats JSON when authenticated', async () => {
-    const proxy = new ProxyServer({ port: 0, accounts: [], proxyApiKey: 'test-key' })
-    const { port } = await proxy.start()
-    try {
-      const http = await import('node:http')
-      const result = await new Promise((resolve) => {
-        http.default.get({
-          hostname: '127.0.0.1',
-          port,
-          path: '/v1/stats',
-          headers: { 'authorization': 'Bearer test-key' },
-        }, res => {
-          const chunks = []
-          res.on('data', c => chunks.push(c))
-          res.on('end', () => resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks).toString() }))
-        })
-      })
-      assert.equal(result.statusCode, 200)
-      const body = JSON.parse(result.body)
-      assert.ok('accounts' in body)
-      assert.ok('totals' in body)
-      assert.ok('uptime' in body)
-      assert.equal(typeof body.uptime, 'number')
-    } finally {
-      await proxy.stop()
-    }
-  })
-
-  it('GET /v1/stats returns 401 without auth', async () => {
-    const proxy = new ProxyServer({ port: 0, accounts: [], proxyApiKey: 'test-key' })
-    const { port } = await proxy.start()
-    try {
-      const http = await import('node:http')
-      const result = await new Promise((resolve) => {
-        http.default.get({
-          hostname: '127.0.0.1',
-          port,
-          path: '/v1/stats',
-        }, res => {
-          const chunks = []
-          res.on('data', c => chunks.push(c))
-          res.on('end', () => resolve({ statusCode: res.statusCode }))
-        })
-      })
-      assert.equal(result.statusCode, 401)
-    } finally {
-      await proxy.stop()
-    }
   })
 })

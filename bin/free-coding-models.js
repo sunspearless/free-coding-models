@@ -80,7 +80,6 @@
  *   - --json: Output results as JSON (for scripting/automation)
  *   - --recommend: Open Smart Recommend immediately on startup
  *   - --profile <name>: Load a saved config profile before entering the TUI
- *   - --clean-proxy / --proxy-clean: Remove persisted fcm-proxy config from OpenCode
  *   - --no-telemetry: Disable anonymous usage analytics for this run
  *   - --help / -h: Print the full CLI help and exit
  *   - --tier S/A/B/C: Filter models by tier letter (S=S+/S, A=A+/A/A-, B=B+/B, C=C)
@@ -98,18 +97,15 @@ import { randomUUID } from 'crypto'
 import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { MODELS, sources } from '../sources.js'
-import { getAvg, getVerdict, getUptime, getP95, getJitter, getStabilityScore, sortResults, filterByTier, findBestModel, parseArgs, TIER_ORDER, VERDICT_ORDER, TIER_LETTER_MAP, scoreModelForTask, getTopRecommendations, TASK_TYPES, PRIORITY_TYPES, CONTEXT_BUDGETS, formatCtxWindow, labelFromId, getProxyStatusInfo, formatResultsAsJSON } from '../src/utils.js'
-import { loadConfig, saveConfig, getApiKey, getProxySettings, resolveApiKeys, addApiKey, removeApiKey, isProviderEnabled, persistApiKeysForProvider } from '../src/config.js'
+import { getAvg, getVerdict, getUptime, getP95, getJitter, getStabilityScore, sortResults, filterByTier, findBestModel, parseArgs, TIER_ORDER, VERDICT_ORDER, TIER_LETTER_MAP, scoreModelForTask, getTopRecommendations, TASK_TYPES, PRIORITY_TYPES, CONTEXT_BUDGETS, formatCtxWindow, labelFromId, formatResultsAsJSON } from '../src/utils.js'
+import { loadConfig, saveConfig, getApiKey, resolveApiKeys, addApiKey, removeApiKey, isProviderEnabled, persistApiKeysForProvider } from '../src/config.js'
 import { buildMergedModels } from '../src/model-merger.js'
-import { ProxyServer } from '../src/proxy-server.js'
-import { loadOpenCodeConfig, saveOpenCodeConfig, syncToOpenCode, restoreOpenCodeBackup, cleanupOpenCodeProxyConfig } from '../src/opencode-sync.js'
-import { syncProxyToTool, cleanupToolConfig, PROXY_SYNCABLE_TOOLS } from '../src/proxy-sync.js'
+import { loadOpenCodeConfig, saveOpenCodeConfig } from '../src/opencode-config.js'
 import { usageForRow as _usageForRow } from '../src/usage-reader.js'
-import { loadRecentLogs } from '../src/log-reader.js'
 import { buildProviderModelTokenKey, loadTokenUsageByProviderModel } from '../src/token-usage-reader.js'
 import { parseOpenRouterResponse, fetchProviderQuota as _fetchProviderQuotaFromModule } from '../src/provider-quota-fetchers.js'
 import { isKnownQuotaTelemetry } from '../src/quota-capabilities.js'
-import { ALT_ENTER, ALT_LEAVE, ALT_HOME, PING_TIMEOUT, PING_INTERVAL, FPS, COL_MODEL, COL_MS, CELL_W, FRAMES, TIER_CYCLE, SETTINGS_OVERLAY_BG, HELP_OVERLAY_BG, RECOMMEND_OVERLAY_BG, LOG_OVERLAY_BG, OVERLAY_PANEL_WIDTH, TABLE_HEADER_LINES, TABLE_FOOTER_LINES, TABLE_FIXED_LINES, msCell, spinCell } from '../src/constants.js'
+import { ALT_ENTER, ALT_LEAVE, ALT_HOME, PING_TIMEOUT, PING_INTERVAL, FPS, COL_MODEL, COL_MS, CELL_W, FRAMES, TIER_CYCLE, SETTINGS_OVERLAY_BG, HELP_OVERLAY_BG, RECOMMEND_OVERLAY_BG, OVERLAY_PANEL_WIDTH, TABLE_HEADER_LINES, TABLE_FOOTER_LINES, TABLE_FIXED_LINES, msCell, spinCell } from '../src/constants.js'
 import { TIER_COLOR } from '../src/tier-colors.js'
 import { resolveCloudflareUrl, buildPingRequest, ping, extractQuotaPercent, getProviderQuotaPercentCached, usagePlaceholderForProvider } from '../src/ping.js'
 import { runFiableMode, filterByTierOrExit, fetchOpenRouterFreeModels } from '../src/analysis.js'
@@ -118,16 +114,15 @@ import { parseTelemetryEnv, isTelemetryDebugEnabled, telemetryDebug, ensureTelem
 import { ensureFavoritesConfig, toFavoriteKey, syncFavoriteFlags, toggleFavoriteModel } from '../src/favorites.js'
 import { checkForUpdateDetailed, checkForUpdate, runUpdate, promptUpdateNotification } from '../src/updater.js'
 import { promptApiKey } from '../src/setup.js'
-import { stripAnsi, maskApiKey, displayWidth, padEndDisplay, tintOverlayLines, keepOverlayTargetVisible, sliceOverlayLines, calculateViewport, sortResultsWithPinnedFavorites, renderProxyStatusLine, adjustScrollOffset } from '../src/render-helpers.js'
+import { stripAnsi, maskApiKey, displayWidth, padEndDisplay, tintOverlayLines, keepOverlayTargetVisible, sliceOverlayLines, calculateViewport, sortResultsWithPinnedFavorites, adjustScrollOffset } from '../src/render-helpers.js'
 import { renderTable, PROVIDER_COLOR } from '../src/render-table.js'
-import { setOpenCodeModelData, startOpenCode, startOpenCodeDesktop, startProxyAndLaunch, autoStartProxyIfSynced, ensureProxyRunning, buildProxyTopologyFromConfig, isProxyEnabledForConfig } from '../src/opencode.js'
+import { setOpenCodeModelData, startOpenCode, startOpenCodeDesktop } from '../src/opencode.js'
 import { startOpenClaw } from '../src/openclaw.js'
 import { createOverlayRenderers } from '../src/overlays.js'
 import { createKeyHandler } from '../src/key-handler.js'
 import { getToolModeOrder, getToolMeta } from '../src/tool-metadata.js'
 import { startExternalTool } from '../src/tool-launchers.js'
-import { startForegroundProxy } from '../src/proxy-foreground.js'
-import { getConfiguredInstallableProviders, installProviderEndpoints, refreshInstalledEndpoints, getInstallTargetModes, getProviderCatalogModels, CONNECTION_MODES } from '../src/endpoint-installer.js'
+import { getConfiguredInstallableProviders, installProviderEndpoints, refreshInstalledEndpoints, getInstallTargetModes, getProviderCatalogModels } from '../src/endpoint-installer.js'
 import { loadCache, saveCache, clearCache, getCacheAge } from '../src/cache.js'
 import { checkConfigSecurity } from '../src/security.js'
 import { buildCliHelpText } from '../src/cli-help.js'
@@ -220,108 +215,6 @@ async function main() {
     config.settings.sortAsc = true
   }
 
-  if (cliArgs.cleanProxyMode) {
-    const cleaned = cleanupOpenCodeProxyConfig()
-    console.log()
-    console.log(chalk.green('  ✅ OpenCode proxy cleanup complete'))
-    console.log(chalk.dim(`  Config: ${cleaned.path}`))
-    console.log(chalk.dim(`  Removed provider: ${cleaned.removedProvider ? 'yes' : 'no'}  •  Removed default model: ${cleaned.removedModel ? 'yes' : 'no'}`))
-    console.log()
-    process.exit(0)
-  }
-
-  // 📖 Foreground proxy mode — starts the proxy in the current terminal with live dashboard
-  if (cliArgs.proxyForegroundMode) {
-    await startForegroundProxy(config, chalk)
-    return // 📖 startForegroundProxy keeps the process alive via signal handlers
-  }
-
-  // 📖 CLI subcommand: free-coding-models daemon <action>
-  const daemonSubcmd = process.argv[2] === 'daemon' ? (process.argv[3] || 'status') : null
-  if (daemonSubcmd) {
-    const dm = await import('../src/daemon-manager.js')
-    if (daemonSubcmd === 'status') {
-      const s = await dm.getDaemonStatus()
-      console.log()
-      if (s.status === 'running') {
-        console.log(chalk.greenBright(`  📡 FCM Proxy V2: Running`))
-        console.log(chalk.dim(`  PID: ${s.info.pid}  •  Port: ${s.info.port}  •  Accounts: ${s.info.accountCount}  •  Version: ${s.info.version}`))
-        console.log(chalk.dim(`  Started: ${s.info.startedAt}`))
-      } else if (s.status === 'stopped') {
-        console.log(chalk.yellow(`  📡 FCM Proxy V2: Stopped (service installed but not running)`))
-      } else if (s.status === 'stale') {
-        console.log(chalk.red(`  📡 FCM Proxy V2: Stale (crashed — PID ${s.info?.pid} no longer alive)`))
-      } else if (s.status === 'unhealthy') {
-        console.log(chalk.red(`  📡 FCM Proxy V2: Unhealthy (PID alive but health check failed)`))
-      } else {
-        console.log(chalk.dim(`  📡 FCM Proxy V2: Not installed`))
-        console.log(chalk.dim(`  Install via: free-coding-models daemon install`))
-      }
-      console.log()
-      process.exit(0)
-    }
-    if (daemonSubcmd === 'install') {
-      const result = dm.installDaemon()
-      console.log()
-      if (result.success) {
-        console.log(chalk.greenBright('  ✅ FCM Proxy V2 background service installed and started!'))
-        console.log(chalk.dim('  The proxy will now run automatically at login.'))
-      } else {
-        console.log(chalk.red(`  ❌ Install failed: ${result.error}`))
-      }
-      console.log()
-      process.exit(result.success ? 0 : 1)
-    }
-    if (daemonSubcmd === 'uninstall') {
-      const result = dm.uninstallDaemon()
-      console.log()
-      if (result.success) {
-        console.log(chalk.greenBright('  ✅ FCM Proxy V2 background service uninstalled.'))
-      } else {
-        console.log(chalk.red(`  ❌ Uninstall failed: ${result.error}`))
-      }
-      console.log()
-      process.exit(result.success ? 0 : 1)
-    }
-    if (daemonSubcmd === 'restart') {
-      const result = dm.restartDaemon()
-      console.log()
-      if (result.success) {
-        console.log(chalk.greenBright('  ✅ FCM Proxy V2 service restarted.'))
-      } else {
-        console.log(chalk.red(`  ❌ Restart failed: ${result.error}`))
-      }
-      console.log()
-      process.exit(result.success ? 0 : 1)
-    }
-    if (daemonSubcmd === 'stop') {
-      const result = dm.stopDaemon()
-      console.log()
-      if (result.success) {
-        console.log(chalk.greenBright('  ✅ FCM Proxy V2 service stopped.'))
-        console.log(chalk.dim('  The service stays installed and can be restarted later.'))
-      } else {
-        console.log(chalk.red(`  ❌ Stop failed: ${result.error}`))
-      }
-      console.log()
-      process.exit(result.success ? 0 : 1)
-    }
-    if (daemonSubcmd === 'logs') {
-      const logPath = dm.getDaemonLogPath()
-      console.log(chalk.dim(`  Log file: ${logPath}`))
-      try {
-        const { execSync } = await import('child_process')
-        execSync(`tail -50 "${logPath}"`, { stdio: 'inherit' })
-      } catch {
-        console.log(chalk.dim('  (no logs yet)'))
-      }
-      process.exit(0)
-    }
-    console.log(chalk.red(`  Unknown command: ${daemonSubcmd}`))
-    console.log(chalk.dim('  Usage: free-coding-models daemon [status|install|uninstall|restart|stop|logs]'))
-    process.exit(1)
-  }
-
   // 📖 Profile system removed - API keys now persist permanently across all sessions
 
   // 📖 Check if any provider has a key — if not, run the first-time setup wizard
@@ -338,9 +231,6 @@ async function main() {
     }
   }
 
-  // 📖 Backward-compat: keep apiKey var for startOpenClaw() which still needs it
-  let apiKey = getApiKey(config, 'nvidia')
-
   // 📖 Default mode: use the last persisted launcher choice when valid,
   // 📖 otherwise fall back to OpenCode CLI.
   let mode = getToolModeOrder().includes(config.settings?.preferredToolMode)
@@ -354,9 +244,6 @@ async function main() {
       aider: cliArgs.aiderMode,
       crush: cliArgs.crushMode,
       goose: cliArgs.gooseMode,
-      'claude-code': cliArgs.claudeCodeMode,
-      codex: cliArgs.codexMode,
-      gemini: cliArgs.geminiMode,
       qwen: cliArgs.qwenMode,
       openhands: cliArgs.openHandsMode,
       amp: cliArgs.ampMode,
@@ -531,15 +418,6 @@ async function main() {
     settingsUpdateState: 'idle',  // 📖 'idle'|'checking'|'available'|'up-to-date'|'error'|'installing'
     settingsUpdateLatestVersion: null, // 📖 Latest npm version discovered from manual check
     settingsUpdateError: null,    // 📖 Last update-check error message for maintenance row
-    settingsProxyPortEditMode: false, // 📖 Whether Settings is editing the preferred proxy port field.
-    settingsProxyPortBuffer: '',  // 📖 Inline input buffer for the preferred proxy port (0 = auto).
-    daemonStatus: 'not-installed', // 📖 Background daemon status: 'running'|'stopped'|'stale'|'unhealthy'|'not-installed'
-    daemonInfo: null,             // 📖 daemon.json contents when daemon is running
-    // 📖 Proxy & Daemon overlay state (opened from Settings)
-    proxyDaemonOpen: false,       // 📖 Whether the dedicated Proxy & Daemon overlay is active
-    proxyDaemonCursor: 0,         // 📖 Selected row in the proxy/daemon overlay
-    proxyDaemonScrollOffset: 0,   // 📖 Vertical scroll offset for the proxy/daemon overlay
-    proxyDaemonMessage: null,     // 📖 Feedback message { type: 'success'|'warning'|'error', msg: string, ts: number }
     config,                       // 📖 Live reference to the config object (updated on save)
     visibleSorted: [],            // 📖 Cached visible+sorted models — shared between render loop and key handlers
     helpVisible: false,           // 📖 Whether the help overlay (K key) is active
@@ -547,12 +425,12 @@ async function main() {
     helpScrollOffset: 0,          // 📖 Vertical scroll offset for Help overlay viewport
     // 📖 Install Endpoints overlay state (Y key opens it)
     installEndpointsOpen: false,  // 📖 Whether the install-endpoints overlay is active
-    installEndpointsPhase: 'providers', // 📖 providers | tools | connection | scope | models | result
+    installEndpointsPhase: 'providers', // 📖 providers | tools | scope | models | result
     installEndpointsCursor: 0,    // 📖 Selected row within the current install phase
     installEndpointsScrollOffset: 0, // 📖 Vertical scroll offset for the install overlay viewport
     installEndpointsProviderKey: null, // 📖 Selected provider for endpoint installation
     installEndpointsToolMode: null, // 📖 Selected target tool mode
-    installEndpointsConnectionMode: null, // 📖 'direct' | 'proxy' — how the tool connects to the provider
+    installEndpointsConnectionMode: null, // 📖 Direct provider path retained for future install flow state.
     installEndpointsScope: null,  // 📖 all | selected
     installEndpointsSelectedModelIds: new Set(), // 📖 Multi-select buffer for the selected-models phase
     installEndpointsErrorMsg: null, // 📖 Temporary validation/error message inside the install flow
@@ -576,22 +454,12 @@ async function main() {
     bugReportError: null,         // 📖 Last webhook error message
     // 📖 OpenCode sync status (S key in settings)
     settingsSyncStatus: null,     // 📖 { type: 'success'|'error', msg: string } — shown in settings footer
-    // 📖 Log page overlay state (X key opens it)
-    logVisible: false,            // 📖 Whether the log page overlay is active
-    logScrollOffset: 0,           // 📖 Vertical scroll offset for log overlay viewport
-    logShowAll: false,             // 📖 Show all logs (true) or limited to 500 (false)
     // 📖 Changelog overlay state (N key opens it)
     changelogOpen: false,         // 📖 Whether the changelog overlay is active
     changelogScrollOffset: 0,     // 📖 Vertical scroll offset for changelog overlay viewport
     changelogPhase: 'index',      // 📖 'index' (all versions) | 'details' (specific version)
     changelogCursor: 0,           // 📖 Selected row in index phase
     changelogSelectedVersion: null, // 📖 Which version to show details for
-    // 📖 Proxy startup status — set by autoStartProxyIfSynced, consumed by Task 3 indicator
-    // 📖 null = not configured/not attempted
-    // 📖 { phase: 'starting' } — proxy start in progress
-    // 📖 { phase: 'running', port, accountCount } — proxy is live
-    // 📖 { phase: 'failed', reason } — proxy failed to start
-    proxyStartupStatus: null,     // 📖 Startup-phase proxy status (null | { phase, ...details })
   }
 
   // 📖 Re-clamp viewport on terminal resize
@@ -660,10 +528,6 @@ async function main() {
       }
     }
   }
-
-  // 📖 Auto-start proxy on launch when proxy auto-sync is enabled for the current tool.
-  // 📖 Fire-and-forget: does not block UI startup. state.proxyStartupStatus is updated async.
-  void autoStartProxyIfSynced(config, state)
 
   // 📖 Load cache if available (for faster startup with cached ping results)
   const cached = loadCache()
@@ -874,19 +738,16 @@ async function main() {
     PROVIDER_COLOR,
     LOCAL_VERSION,
     getApiKey,
-    getProxySettings,
     resolveApiKeys,
     isProviderEnabled,
     TIER_CYCLE,
     SETTINGS_OVERLAY_BG,
     HELP_OVERLAY_BG,
     RECOMMEND_OVERLAY_BG,
-    LOG_OVERLAY_BG,
     OVERLAY_PANEL_WIDTH,
     keepOverlayTargetVisible,
     sliceOverlayLines,
     tintOverlayLines,
-    loadRecentLogs,
     TASK_TYPES,
     PRIORITY_TYPES,
     CONTEXT_BUDGETS,
@@ -901,7 +762,6 @@ async function main() {
     getConfiguredInstallableProviders,
     getInstallTargetModes,
     getProviderCatalogModels,
-    CONNECTION_MODES,
     getToolMeta,
   })
 
@@ -912,7 +772,6 @@ async function main() {
     MODELS,
     sources,
     getApiKey,
-    getProxySettings,
     resolveApiKeys,
     addApiKey,
     removeApiKey,
@@ -923,7 +782,6 @@ async function main() {
     getInstallTargetModes,
     getProviderCatalogModels,
     installProviderEndpoints,
-    CONNECTION_MODES,
     syncFavoriteFlags,
     toggleFavoriteModel,
     sortResultsWithPinnedFavorites,
@@ -933,19 +791,12 @@ async function main() {
     TIER_CYCLE,
     ORIGIN_CYCLE,
     ENV_VAR_NAMES,
-    ensureProxyRunning,
-    syncToOpenCode,
-    cleanupToolConfig,
-    restoreOpenCodeBackup,
     checkForUpdateDetailed,
     runUpdate,
     startOpenClaw,
     startOpenCodeDesktop,
     startOpenCode,
-    startProxyAndLaunch,
     startExternalTool,
-    buildProxyTopologyFromConfig,
-    isProxyEnabledForConfig,
     getToolModeOrder,
     startRecommendAnalysis: overlays.startRecommendAnalysis,
     stopRecommendAnalysis: overlays.stopRecommendAnalysis,
@@ -957,7 +808,6 @@ async function main() {
     CONTEXT_BUDGETS,
     toFavoriteKey,
     mergedModels,
-    apiKey,
     chalk,
     setPingMode,
     noteUserActivity,
@@ -996,14 +846,12 @@ async function main() {
     refreshAutoPingMode()
     state.frame++
     // 📖 Cache visible+sorted models each frame so Enter handler always matches the display
-    if (!state.settingsOpen && !state.installEndpointsOpen && !state.recommendOpen && !state.feedbackOpen && !state.changelogOpen && !state.proxyDaemonOpen) {
+    if (!state.settingsOpen && !state.installEndpointsOpen && !state.recommendOpen && !state.feedbackOpen && !state.changelogOpen) {
       const visible = state.results.filter(r => !r.hidden)
       state.visibleSorted = sortResultsWithPinnedFavorites(visible, state.sortColumn, state.sortDirection)
     }
     const content = state.settingsOpen
       ? overlays.renderSettings()
-      : state.proxyDaemonOpen
-        ? overlays.renderProxyDaemon()
       : state.installEndpointsOpen
         ? overlays.renderInstallEndpoints()
       : state.recommendOpen
@@ -1012,11 +860,9 @@ async function main() {
           ? overlays.renderFeedback()
             : state.helpVisible
                 ? overlays.renderHelp()
-              : state.logVisible
-                ? overlays.renderLog()
               : state.changelogOpen
                 ? overlays.renderChangelog()
-                 : renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, state.tierFilterMode, state.scrollOffset, state.terminalRows, state.terminalCols, state.originFilterMode, state.proxyStartupStatus, state.pingMode, state.pingModeSource, state.hideUnconfiguredModels, state.widthWarningStartedAt, state.widthWarningDismissed, state.widthWarningShowCount, state.settingsUpdateState, state.settingsUpdateLatestVersion, getProxySettings(state.config).enabled === true, state.startupLatestVersion, state.versionAlertsEnabled)
+                 : renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, state.tierFilterMode, state.scrollOffset, state.terminalRows, state.terminalCols, state.originFilterMode, null, state.pingMode, state.pingModeSource, state.hideUnconfiguredModels, state.widthWarningStartedAt, state.widthWarningDismissed, state.widthWarningShowCount, state.settingsUpdateState, state.settingsUpdateLatestVersion, false, state.startupLatestVersion, state.versionAlertsEnabled)
     process.stdout.write(ALT_HOME + content)
     if (process.stdout.isTTY) {
       process.stdout.flush && process.stdout.flush()
@@ -1027,7 +873,7 @@ async function main() {
   const initialVisible = state.results.filter(r => !r.hidden)
   state.visibleSorted = sortResultsWithPinnedFavorites(initialVisible, state.sortColumn, state.sortDirection)
 
-  process.stdout.write(ALT_HOME + renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, state.tierFilterMode, state.scrollOffset, state.terminalRows, state.terminalCols, state.originFilterMode, state.proxyStartupStatus, state.pingMode, state.pingModeSource, state.hideUnconfiguredModels, state.widthWarningStartedAt, state.widthWarningDismissed, state.widthWarningShowCount, state.settingsUpdateState, state.settingsUpdateLatestVersion, getProxySettings(state.config).enabled === true, state.startupLatestVersion, state.versionAlertsEnabled))
+  process.stdout.write(ALT_HOME + renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, state.tierFilterMode, state.scrollOffset, state.terminalRows, state.terminalCols, state.originFilterMode, null, state.pingMode, state.pingModeSource, state.hideUnconfiguredModels, state.widthWarningStartedAt, state.widthWarningDismissed, state.widthWarningShowCount, state.settingsUpdateState, state.settingsUpdateLatestVersion, false, state.startupLatestVersion, state.versionAlertsEnabled))
   if (process.stdout.isTTY) {
     process.stdout.flush && process.stdout.flush()
   }
@@ -1054,7 +900,7 @@ async function main() {
     refreshAutoPingMode()
     state.lastPingTime = Date.now()
 
-    // 📖 Refresh persisted usage snapshots each cycle so proxy writes appear live in table.
+    // 📖 Refresh persisted usage snapshots each cycle so background usage data appears live in table.
     // 📖 Freshness-aware: stale snapshots (>30m) are excluded and row reverts to undefined.
     for (const r of state.results) {
       const pct = _usageForRow(r.providerKey, r.modelId)

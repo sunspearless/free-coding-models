@@ -8,10 +8,7 @@
  *   tool launch actions. It also keeps the live key bindings aligned with the
  *   highlighted letters shown in the table headers.
  *
- *   📖 Key J opens the FCM Proxy V2 overlay directly (with daemon status refresh).
  *   📖 Key I opens the unified "Feedback, bugs & requests" overlay.
- *   📖 The proxy overlay handles sync toggle and cleanup for the current Z-selected tool,
- *       plus all daemon management actions.
  *
  *   It also owns the "test key" model selection used by the Settings overlay.
  *   Some providers expose models in `/v1/models` that are not actually callable
@@ -31,7 +28,8 @@
  */
 
 import { loadChangelog } from './changelog-loader.js'
-import { resolveProxySyncToolMode } from './proxy-sync.js'
+import { loadConfig, replaceConfigContents } from './config.js'
+import { cleanupLegacyProxyArtifacts } from './legacy-proxy-cleanup.js'
 
 // 📖 Some providers need an explicit probe model because the first catalog entry
 // 📖 is not guaranteed to be accepted by their chat endpoint.
@@ -160,7 +158,6 @@ export function createKeyHandler(ctx) {
     MODELS,
     sources,
     getApiKey,
-    getProxySettings,
     resolveApiKeys,
     addApiKey,
     removeApiKey,
@@ -171,7 +168,6 @@ export function createKeyHandler(ctx) {
     getInstallTargetModes,
     getProviderCatalogModels,
     installProviderEndpoints,
-    CONNECTION_MODES,
     syncFavoriteFlags,
     toggleFavoriteModel,
     sortResultsWithPinnedFavorites,
@@ -181,19 +177,12 @@ export function createKeyHandler(ctx) {
     TIER_CYCLE,
     ORIGIN_CYCLE,
     ENV_VAR_NAMES,
-    ensureProxyRunning,
-    syncToOpenCode,
-    cleanupToolConfig,
-    restoreOpenCodeBackup,
     checkForUpdateDetailed,
     runUpdate,
     startOpenClaw,
     startOpenCodeDesktop,
     startOpenCode,
-    startProxyAndLaunch,
     startExternalTool,
-    buildProxyTopologyFromConfig,
-    isProxyEnabledForConfig,
     getToolModeOrder,
     startRecommendAnalysis,
     stopRecommendAnalysis,
@@ -206,7 +195,6 @@ export function createKeyHandler(ctx) {
     CONTEXT_BUDGETS,
     toFavoriteKey,
     mergedModels,
-    apiKey,
     chalk,
     setPingMode,
     noteUserActivity,
@@ -329,6 +317,39 @@ export function createKeyHandler(ctx) {
     runUpdate(latestVersion)
   }
 
+  // 📖 The old multi-tool proxy is discontinued. This maintenance action clears
+  // 📖 stale config/env/service leftovers so users stay on the stable direct path.
+  function runLegacyProxyCleanup() {
+    const summary = cleanupLegacyProxyArtifacts()
+    replaceConfigContents(state.config, loadConfig())
+
+    if (summary.errors.length > 0) {
+      const cleanedTargets = summary.removedFiles.length + summary.updatedFiles.length
+      const partialDetail = summary.changed
+        ? `Cleaned ${cleanedTargets} legacy paths, but ${summary.errors.length} items still need manual cleanup.`
+        : `Cleanup hit ${summary.errors.length} file errors.`
+      state.settingsSyncStatus = {
+        type: 'error',
+        msg: `⚠️ Proxy cleanup was partial. ${partialDetail} The old bridge is discontinued while a more stable replacement is being built.`,
+      }
+      return
+    }
+
+    if (summary.changed) {
+      const cleanedTargets = summary.removedFiles.length + summary.updatedFiles.length
+      state.settingsSyncStatus = {
+        type: 'success',
+        msg: `ℹ️ Removed discontinued proxy leftovers from ${cleanedTargets} path${cleanedTargets === 1 ? '' : 's'}. A much more stable replacement is coming soon.`,
+      }
+      return
+    }
+
+    state.settingsSyncStatus = {
+      type: 'success',
+      msg: 'ℹ️ No discontinued proxy config was found. You are already on the stable direct-provider setup.',
+    }
+  }
+
   function resetInstallEndpointsOverlay() {
     state.installEndpointsOpen = false
     state.installEndpointsPhase = 'providers'
@@ -385,7 +406,6 @@ export function createKeyHandler(ctx) {
 
       const providerChoices = getConfiguredInstallableProviders(state.config)
       const toolChoices = getInstallTargetModes()
-      const connectionChoices = CONNECTION_MODES || []
       const modelChoices = state.installEndpointsProviderKey
         ? getProviderCatalogModels(state.installEndpointsProviderKey)
         : []
@@ -394,7 +414,6 @@ export function createKeyHandler(ctx) {
       const maxIndexByPhase = () => {
         if (state.installEndpointsPhase === 'providers') return Math.max(0, providerChoices.length - 1)
         if (state.installEndpointsPhase === 'tools') return Math.max(0, toolChoices.length - 1)
-        if (state.installEndpointsPhase === 'connection') return Math.max(0, connectionChoices.length - 1)
         if (state.installEndpointsPhase === 'scope') return 1
         if (state.installEndpointsPhase === 'models') return Math.max(0, modelChoices.length - 1)
         return 0
@@ -437,15 +456,9 @@ export function createKeyHandler(ctx) {
           state.installEndpointsScrollOffset = 0
           return
         }
-        if (state.installEndpointsPhase === 'connection') {
+        if (state.installEndpointsPhase === 'scope') {
           state.installEndpointsPhase = 'tools'
           state.installEndpointsCursor = 0
-          state.installEndpointsScrollOffset = 0
-          return
-        }
-        if (state.installEndpointsPhase === 'scope') {
-          state.installEndpointsPhase = 'connection'
-          state.installEndpointsCursor = state.installEndpointsConnectionMode === 'proxy' ? 1 : 0
           state.installEndpointsScrollOffset = 0
           return
         }
@@ -481,20 +494,7 @@ export function createKeyHandler(ctx) {
           const selectedToolMode = toolChoices[state.installEndpointsCursor]
           if (!selectedToolMode) return
           state.installEndpointsToolMode = selectedToolMode
-          state.installEndpointsPhase = 'connection'
-          state.installEndpointsCursor = 0
-          state.installEndpointsScrollOffset = 0
-          state.installEndpointsErrorMsg = null
-        }
-        return
-      }
-
-      // 📖 Connection mode phase: Direct Provider vs FCM Proxy
-      if (state.installEndpointsPhase === 'connection') {
-        if (key.name === 'return') {
-          const selected = connectionChoices[state.installEndpointsCursor]
-          if (!selected) return
-          state.installEndpointsConnectionMode = selected.key
+          state.installEndpointsConnectionMode = 'direct'
           state.installEndpointsPhase = 'scope'
           state.installEndpointsCursor = 0
           state.installEndpointsScrollOffset = 0
@@ -661,29 +661,6 @@ export function createKeyHandler(ctx) {
       if (key.name === 'pagedown') { state.helpScrollOffset += pageStep; return }
       if (key.name === 'home') { state.helpScrollOffset = 0; return }
       if (key.name === 'end') { state.helpScrollOffset = Number.MAX_SAFE_INTEGER; return }
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-      return
-    }
-
-    // 📖 Log page overlay: full keyboard navigation + key swallowing while overlay is open.
-    if (state.logVisible) {
-      const pageStep = Math.max(1, (state.terminalRows || 1) - 2)
-      if (key.name === 'escape' || key.name === 'x') {
-        state.logVisible = false
-        return
-      }
-      // 📖 A key: toggle between showing all logs and limited to 500
-      if (key.name === 'a') {
-        state.logShowAll = !state.logShowAll
-        state.logScrollOffset = 0
-        return
-      }
-      if (key.name === 'up') { state.logScrollOffset = Math.max(0, state.logScrollOffset - 1); return }
-      if (key.name === 'down') { state.logScrollOffset += 1; return }
-      if (key.name === 'pageup') { state.logScrollOffset = Math.max(0, state.logScrollOffset - pageStep); return }
-      if (key.name === 'pagedown') { state.logScrollOffset += pageStep; return }
-      if (key.name === 'home') { state.logScrollOffset = 0; return }
-      if (key.name === 'end') { state.logScrollOffset = Number.MAX_SAFE_INTEGER; return }
       if (key.ctrl && key.name === 'c') { exit(0); return }
       return
     }
@@ -914,14 +891,13 @@ export function createKeyHandler(ctx) {
 
     // ─── Settings overlay keyboard handling ───────────────────────────────────
     if (state.settingsOpen) {
-      const proxySettings = getProxySettings(state.config)
       const providerKeys = Object.keys(sources)
-const updateRowIdx = providerKeys.length
-       const widthWarningRowIdx = updateRowIdx + 1
-       const proxyDaemonRowIdx = widthWarningRowIdx + 1
-       const changelogViewRowIdx = proxyDaemonRowIdx + 1
+      const updateRowIdx = providerKeys.length
+      const widthWarningRowIdx = updateRowIdx + 1
+      const cleanupLegacyProxyRowIdx = widthWarningRowIdx + 1
+      const changelogViewRowIdx = cleanupLegacyProxyRowIdx + 1
         // 📖 Profile system removed - API keys now persist permanently across all sessions
-        const maxRowIdx = changelogViewRowIdx
+      const maxRowIdx = changelogViewRowIdx
 
       // 📖 Edit/Add-key mode: capture typed characters for the API key
       if (state.settingsEditMode || state.settingsAddKeyMode) {
@@ -982,8 +958,6 @@ const updateRowIdx = providerKeys.length
         state.settingsOpen = false
         state.settingsEditMode = false
         state.settingsAddKeyMode = false
-        state.settingsProxyPortEditMode = false
-        state.settingsProxyPortBuffer = ''
         state.settingsEditBuffer = ''
         state.settingsSyncStatus = null  // 📖 Clear sync status on close
         // 📖 Rebuild results: add models from newly enabled providers, remove disabled
@@ -1072,20 +1046,8 @@ const updateRowIdx = providerKeys.length
           return
         }
 
-        // 📖 Proxy & Daemon row: Enter → open dedicated overlay
-        if (state.settingsCursor === proxyDaemonRowIdx) {
-          state.settingsOpen = false
-          state.proxyDaemonOpen = true
-          state.proxyDaemonCursor = 0
-          state.proxyDaemonScrollOffset = 0
-          state.proxyDaemonMessage = null
-          // 📖 Refresh daemon status when entering
-          try {
-            const { getDaemonStatus: _gds } = await import('./daemon-manager.js')
-            const st = await _gds()
-            state.daemonStatus = st.status
-            state.daemonInfo = st.info || null
-          } catch { /* ignore */ }
+        if (state.settingsCursor === cleanupLegacyProxyRowIdx) {
+          runLegacyProxyCleanup()
           return
         }
 
@@ -1111,7 +1073,11 @@ const updateRowIdx = providerKeys.length
 
       if (key.name === 'space') {
         // 📖 Exclude certain rows from space toggle
-        if (state.settingsCursor === updateRowIdx || state.settingsCursor === proxyDaemonRowIdx || state.settingsCursor === changelogViewRowIdx) return
+        if (
+          state.settingsCursor === updateRowIdx
+          || state.settingsCursor === cleanupLegacyProxyRowIdx
+          || state.settingsCursor === changelogViewRowIdx
+        ) return
         // 📖 Widths Warning toggle (disable/enable)
         if (state.settingsCursor === widthWarningRowIdx) {
           if (!state.config.settings) state.config.settings = {}
@@ -1131,7 +1097,11 @@ const updateRowIdx = providerKeys.length
       }
 
       if (key.name === 't') {
-        if (state.settingsCursor === updateRowIdx || state.settingsCursor === proxyDaemonRowIdx || state.settingsCursor === changelogViewRowIdx) return
+        if (
+          state.settingsCursor === updateRowIdx
+          || state.settingsCursor === cleanupLegacyProxyRowIdx
+          || state.settingsCursor === changelogViewRowIdx
+        ) return
         // 📖 Profile system removed - API keys now persist permanently across all sessions
 
         // 📖 Test the selected provider's key (fires a real ping)
@@ -1148,47 +1118,6 @@ const updateRowIdx = providerKeys.length
         // 📖 Profile system removed - API keys now persist permanently across all sessions
 
       if (key.ctrl && key.name === 'c') { exit(0); return }
-
-       // 📖 S key: sync FCM provider entries to OpenCode config (merge, don't replace)
-        if (key.name === 's' && !key.shift && !key.ctrl) {
-          try {
-            if (!proxySettings.enabled) {
-              state.settingsSyncStatus = { type: 'error', msg: '⚠ Enable Proxy mode first if you want to sync fcm-proxy into OpenCode' }
-              return
-            }
-            if (!proxySettings.syncToOpenCode) {
-              state.settingsSyncStatus = { type: 'error', msg: '⚠ Enable "Persist proxy in OpenCode" first, or use the direct OpenCode flow only' }
-              return
-            }
-            // 📖 Sync now also ensures proxy is running, so OpenCode can use fcm-proxy immediately.
-            const started = await ensureProxyRunning(state.config)
-            const result = syncToOpenCode(state.config, sources, mergedModels, {
-              proxyPort: started.port,
-              proxyToken: started.proxyToken,
-              availableModelSlugs: started.availableModelSlugs,
-            })
-            state.settingsSyncStatus = {
-              type: 'success',
-              msg: `✅ Synced ${result.providerKey} (${result.modelCount} models), proxy running on :${started.port}`,
-            }
-        } catch (err) {
-          state.settingsSyncStatus = { type: 'error', msg: `❌ Sync failed: ${err.message}` }
-        }
-        return
-      }
-
-      // 📖 R key: restore OpenCode config from backup (opencode.json.bak)
-      if (key.name === 'r' && !key.shift && !key.ctrl) {
-        try {
-          const restored = restoreOpenCodeBackup()
-          state.settingsSyncStatus = restored
-            ? { type: 'success', msg: '✅ OpenCode config restored from backup' }
-            : { type: 'error', msg: '⚠  No backup found (opencode.json.bak)' }
-        } catch (err) {
-          state.settingsSyncStatus = { type: 'error', msg: `❌ Restore failed: ${err.message}` }
-        }
-        return
-      }
 
       // 📖 + key: open add-key input (empty buffer) — appends new key on Enter
       if ((str === '+' || key.name === '+') && state.settingsCursor < providerKeys.length) {
@@ -1220,291 +1149,14 @@ const updateRowIdx = providerKeys.length
       return // 📖 Swallow all other keys while settings is open
     }
 
-    // ─── Proxy & Daemon overlay keyboard handling ─────────────────────────────
-    if (state.proxyDaemonOpen) {
-      const proxySettings = getProxySettings(state.config)
-      const ROW_PROXY_ENABLED = 0
-      const ROW_PROXY_SYNC = 1
-      const ROW_PROXY_PORT = 2
-      const ROW_PROXY_CLEANUP = 3
-      const ROW_DAEMON_INSTALL = 4
-      const ROW_DAEMON_RESTART = 5
-      const ROW_DAEMON_STOP = 6
-      const ROW_DAEMON_KILL = 7
-      const ROW_DAEMON_LOGS = 8
-
-      const daemonStatus = state.daemonStatus || 'not-installed'
-      const daemonIsInstalled = daemonStatus === 'running' || daemonStatus === 'stopped' || daemonStatus === 'unhealthy' || daemonStatus === 'stale'
-      const maxRow = daemonIsInstalled ? ROW_DAEMON_LOGS : ROW_DAEMON_INSTALL
-
-      // 📖 Port edit mode (same as old Settings behavior)
-      if (state.settingsProxyPortEditMode) {
-        if (key.name === 'return') {
-          const parsed = parseInt(state.settingsProxyPortBuffer, 10)
-          if (isNaN(parsed) || parsed < 0 || parsed > 65535) {
-            state.proxyDaemonMessage = { type: 'error', msg: '❌ Port must be 0 (auto) or 1–65535', ts: Date.now() }
-            return
-          }
-          if (!state.config.settings) state.config.settings = {}
-          state.config.settings.proxy = { ...proxySettings, preferredPort: parsed }
-          saveConfig(state.config)
-          state.settingsProxyPortEditMode = false
-          state.settingsProxyPortBuffer = ''
-          state.proxyDaemonMessage = { type: 'success', msg: `✅ Preferred port saved: ${parsed === 0 ? 'auto' : parsed}`, ts: Date.now() }
-        } else if (key.name === 'escape') {
-          state.settingsProxyPortEditMode = false
-          state.settingsProxyPortBuffer = ''
-        } else if (key.name === 'backspace') {
-          state.settingsProxyPortBuffer = state.settingsProxyPortBuffer.slice(0, -1)
-        } else if (str && /^[0-9]$/.test(str) && state.settingsProxyPortBuffer.length < 5) {
-          state.settingsProxyPortBuffer += str
-        }
-        return
-      }
-
-      // 📖 Escape → back to Settings
-      if (key.name === 'escape') {
-        state.proxyDaemonOpen = false
-        state.settingsOpen = true
-        state.settingsProxyPortEditMode = false
-        state.settingsProxyPortBuffer = ''
-        return
-      }
-
-      // 📖 Navigation
-      if (key.name === 'up' && state.proxyDaemonCursor > 0) { state.proxyDaemonCursor--; return }
-      if (key.name === 'down' && state.proxyDaemonCursor < maxRow) { state.proxyDaemonCursor++; return }
-      if (key.name === 'home') { state.proxyDaemonCursor = 0; return }
-      if (key.name === 'end') { state.proxyDaemonCursor = maxRow; return }
-      if (key.name === 'pageup') { state.proxyDaemonCursor = Math.max(0, state.proxyDaemonCursor - 5); return }
-      if (key.name === 'pagedown') { state.proxyDaemonCursor = Math.min(maxRow, state.proxyDaemonCursor + 5); return }
-
-      // 📖 Proxy sync now follows the current Z-selected tool automatically.
-      const currentToolMode = state.mode || 'opencode'
-      const currentProxyTool = resolveProxySyncToolMode(currentToolMode)
-
-      // 📖 Space toggles on proxy rows
-      if (key.name === 'space') {
-        if (state.proxyDaemonCursor === ROW_PROXY_ENABLED) {
-          if (!state.config.settings) state.config.settings = {}
-          state.config.settings.proxy = { ...proxySettings, enabled: !proxySettings.enabled }
-          saveConfig(state.config)
-          state.proxyDaemonMessage = { type: 'success', msg: `✅ Proxy mode ${state.config.settings.proxy.enabled ? 'enabled' : 'disabled'}`, ts: Date.now() }
-          return
-        }
-        if (state.proxyDaemonCursor === ROW_PROXY_SYNC) {
-          if (!currentProxyTool) {
-            state.proxyDaemonMessage = { type: 'warning', msg: '⚠ Current tool does not support persisted proxy sync', ts: Date.now() }
-            return
-          }
-          if (!state.config.settings) state.config.settings = {}
-          state.config.settings.proxy = { ...proxySettings, syncToOpenCode: !proxySettings.syncToOpenCode }
-          saveConfig(state.config)
-          const { getToolMeta } = await import('./tool-metadata.js')
-          const toolLabel = getToolMeta(currentProxyTool).label
-          state.proxyDaemonMessage = { type: 'success', msg: `✅ Auto-sync to ${toolLabel} ${state.config.settings.proxy.syncToOpenCode ? 'enabled' : 'disabled'}`, ts: Date.now() }
-          return
-        } else {
-          return
-        }
-      }
-
-      // 📖 Enter on proxy rows
-      if (key.name === 'return') {
-        // 📖 Proxy enabled — toggle
-        if (state.proxyDaemonCursor === ROW_PROXY_ENABLED) {
-          if (!state.config.settings) state.config.settings = {}
-          state.config.settings.proxy = { ...proxySettings, enabled: !proxySettings.enabled }
-          saveConfig(state.config)
-          state.proxyDaemonMessage = { type: 'success', msg: `✅ Proxy mode ${state.config.settings.proxy.enabled ? 'enabled' : 'disabled'}`, ts: Date.now() }
-          return
-        }
-
-        // 📖 Auto-sync toggle
-        if (state.proxyDaemonCursor === ROW_PROXY_SYNC) {
-          if (!currentProxyTool) {
-            state.proxyDaemonMessage = { type: 'warning', msg: '⚠ Current tool does not support persisted proxy sync', ts: Date.now() }
-            return
-          }
-          if (!state.config.settings) state.config.settings = {}
-          state.config.settings.proxy = { ...proxySettings, syncToOpenCode: !proxySettings.syncToOpenCode }
-          saveConfig(state.config)
-          const { getToolMeta } = await import('./tool-metadata.js')
-          const toolLabel = getToolMeta(currentProxyTool).label
-          state.proxyDaemonMessage = { type: 'success', msg: `✅ Auto-sync to ${toolLabel} ${state.config.settings.proxy.syncToOpenCode ? 'enabled' : 'disabled'}`, ts: Date.now() }
-          return
-        }
-
-        // 📖 Port — enter edit mode
-        if (state.proxyDaemonCursor === ROW_PROXY_PORT) {
-          state.settingsProxyPortEditMode = true
-          state.settingsProxyPortBuffer = String(proxySettings.preferredPort || 0)
-          return
-        }
-
-        // 📖 Clean proxy config — generalized for active tool
-        if (state.proxyDaemonCursor === ROW_PROXY_CLEANUP) {
-          if (!currentProxyTool) {
-            state.proxyDaemonMessage = { type: 'warning', msg: '⚠ Current tool has no persisted proxy config to clean', ts: Date.now() }
-            return
-          }
-          const result = cleanupToolConfig(currentProxyTool)
-          const { getToolMeta } = await import('./tool-metadata.js')
-          const toolLabel = getToolMeta(currentProxyTool).label
-          if (result.success) {
-            state.proxyDaemonMessage = { type: 'success', msg: `✅ ${toolLabel} proxy config cleaned — all fcm-* entries removed`, ts: Date.now() }
-          } else {
-            state.proxyDaemonMessage = { type: 'error', msg: `❌ Cleanup failed: ${result.error}`, ts: Date.now() }
-          }
-          return
-        }
-
-        // 📖 Install / Uninstall daemon
-        if (state.proxyDaemonCursor === ROW_DAEMON_INSTALL) {
-          const { getDaemonStatus: _gds, installDaemon, uninstallDaemon, getPlatformSupport } = await import('./daemon-manager.js')
-          const platform = getPlatformSupport()
-          if (!platform.supported) {
-            state.proxyDaemonMessage = { type: 'warning', msg: `⚠ ${platform.reason}`, ts: Date.now() }
-            return
-          }
-          const current = await _gds()
-          if (current.status === 'not-installed') {
-            // 📖 Install daemon
-            if (!proxySettings.enabled) {
-              state.config.settings.proxy.enabled = true
-            }
-            state.config.settings.proxy.daemonEnabled = true
-            state.config.settings.proxy.daemonConsent = new Date().toISOString()
-            if (!state.config.settings.proxy.preferredPort || state.config.settings.proxy.preferredPort === 0) {
-              state.config.settings.proxy.preferredPort = 18045
-            }
-            saveConfig(state.config)
-            const result = installDaemon()
-            if (result.success) {
-              state.proxyDaemonMessage = { type: 'success', msg: '✅ FCM Proxy V2 background service installed and started!', ts: Date.now() }
-              const ns = await _gds()
-              state.daemonStatus = ns.status
-              state.daemonInfo = ns.info || null
-            } else {
-              state.proxyDaemonMessage = { type: 'error', msg: `❌ Install failed: ${result.error}`, ts: Date.now() }
-            }
-          } else {
-            // 📖 Uninstall daemon
-            const result = uninstallDaemon()
-            state.config.settings.proxy.daemonEnabled = false
-            saveConfig(state.config)
-            if (result.success) {
-              state.proxyDaemonMessage = { type: 'success', msg: '✅ FCM Proxy V2 background service uninstalled.', ts: Date.now() }
-              state.daemonStatus = 'not-installed'
-              state.daemonInfo = null
-            } else {
-              state.proxyDaemonMessage = { type: 'error', msg: `❌ Uninstall failed: ${result.error}`, ts: Date.now() }
-            }
-          }
-          return
-        }
-
-        // 📖 Restart daemon
-        if (state.proxyDaemonCursor === ROW_DAEMON_RESTART) {
-          const { restartDaemon, getDaemonStatus: _gds } = await import('./daemon-manager.js')
-          const result = restartDaemon()
-          if (result.success) {
-            state.proxyDaemonMessage = { type: 'success', msg: '✅ FCM Proxy V2 service restarted.', ts: Date.now() }
-            // 📖 Wait a bit for the daemon to start up
-            setTimeout(async () => {
-              try {
-                const ns = await _gds()
-                state.daemonStatus = ns.status
-                state.daemonInfo = ns.info || null
-              } catch { /* ignore */ }
-            }, 2000)
-          } else {
-            state.proxyDaemonMessage = { type: 'error', msg: `❌ Restart failed: ${result.error}`, ts: Date.now() }
-          }
-          return
-        }
-
-        // 📖 Stop daemon (SIGTERM)
-        if (state.proxyDaemonCursor === ROW_DAEMON_STOP) {
-          const { stopDaemon, getDaemonStatus: _gds } = await import('./daemon-manager.js')
-          const result = stopDaemon()
-          if (result.success) {
-            const warning = result.willRestart ? ' (service may auto-restart it)' : ''
-            state.proxyDaemonMessage = { type: 'success', msg: `✅ FCM Proxy V2 service stopped.${warning}`, ts: Date.now() }
-            setTimeout(async () => {
-              try {
-                const ns = await _gds()
-                state.daemonStatus = ns.status
-                state.daemonInfo = ns.info || null
-              } catch { /* ignore */ }
-            }, 1500)
-          } else {
-            state.proxyDaemonMessage = { type: 'error', msg: `❌ Stop failed: ${result.error}`, ts: Date.now() }
-          }
-          return
-        }
-
-        // 📖 Force kill daemon (SIGKILL) — emergency
-        if (state.proxyDaemonCursor === ROW_DAEMON_KILL) {
-          const { killDaemonProcess, getDaemonStatus: _gds } = await import('./daemon-manager.js')
-          const result = killDaemonProcess()
-          if (result.success) {
-            state.proxyDaemonMessage = { type: 'success', msg: '✅ FCM Proxy V2 service force-killed (SIGKILL).', ts: Date.now() }
-            const ns = await _gds()
-            state.daemonStatus = ns.status
-            state.daemonInfo = ns.info || null
-          } else {
-            state.proxyDaemonMessage = { type: 'error', msg: `❌ Kill failed: ${result.error}`, ts: Date.now() }
-          }
-          return
-        }
-
-        // 📖 View daemon logs
-        if (state.proxyDaemonCursor === ROW_DAEMON_LOGS) {
-          const { getDaemonLogPath } = await import('./daemon-manager.js')
-          const logPath = getDaemonLogPath()
-          try {
-            const { readFileSync, existsSync } = await import('node:fs')
-            if (!existsSync(logPath)) {
-              state.proxyDaemonMessage = { type: 'warning', msg: `⚠ No log file found at ${logPath}`, ts: Date.now() }
-              return
-            }
-            const content = readFileSync(logPath, 'utf8')
-            const logLines = content.split('\n')
-            const last50 = logLines.slice(-50).join('\n')
-            // 📖 Display in the log overlay (repurpose log view)
-            state.proxyDaemonOpen = false
-            state.logVisible = true
-            state.logScrollOffset = 0
-            state._daemonLogContent = last50
-            state.proxyDaemonMessage = { type: 'success', msg: `📖 Showing last ${Math.min(50, logLines.length)} lines from ${logPath}`, ts: Date.now() }
-          } catch (err) {
-            state.proxyDaemonMessage = { type: 'error', msg: `❌ Could not read logs: ${err.message}`, ts: Date.now() }
-          }
-          return
-        }
-      }
-
-      return // 📖 Swallow all other keys while proxy/daemon overlay is open
-    }
-
     // 📖 P key: open settings screen
     if (key.name === 'p' && !key.shift) {
       state.settingsOpen = true
       state.settingsCursor = 0
       state.settingsEditMode = false
       state.settingsAddKeyMode = false
-      state.settingsProxyPortEditMode = false
-      state.settingsProxyPortBuffer = ''
       state.settingsEditBuffer = ''
       state.settingsScrollOffset = 0
-      // 📖 Refresh daemon status when opening settings
-      import('./daemon-manager.js').then(dm => {
-        dm.getDaemonStatus().then(s => {
-          state.daemonStatus = s.status
-          state.daemonInfo = s.info || null
-        }).catch(() => {})
-      }).catch(() => {})
       return
     }
 
@@ -1624,22 +1276,6 @@ const updateRowIdx = providerKeys.length
       return
     }
 
-    // 📖 J key: open FCM Proxy V2 settings overlay directly (bypasses Settings screen)
-    if (key.name === 'j') {
-      state.proxyDaemonOpen = true
-      state.proxyDaemonCursor = 0
-      state.proxyDaemonScrollOffset = 0
-      state.proxyDaemonMessage = null
-      // 📖 Refresh daemon status when entering
-      try {
-        const { getDaemonStatus: _gds } = await import('./daemon-manager.js')
-        const st = await _gds()
-        state.daemonStatus = st.status
-        state.daemonInfo = st.info || null
-      } catch { /* ignore */ }
-      return
-    }
-
     // 📖 I key: open Feedback overlay (anonymous Discord feedback)
     if (key.name === 'i') {
       state.feedbackOpen = true
@@ -1730,14 +1366,6 @@ const updateRowIdx = providerKeys.length
       return
     }
 
-    // 📖 X key: toggle the log page overlay (shows recent requests from request-log.jsonl).
-    // 📖 NOTE: X was previously used for ping-interval increase; that binding moved to '='.
-    if (key.name === 'x') {
-      state.logVisible = !state.logVisible
-      if (state.logVisible) state.logScrollOffset = 0
-      return
-    }
-
     if (key.name === 'up') {
       // 📖 Main list wrap navigation: top -> bottom on Up.
       const count = state.visibleSorted.length
@@ -1802,20 +1430,11 @@ const updateRowIdx = providerKeys.length
 
       // 📖 Dispatch to the correct integration based on active mode
       if (state.mode === 'openclaw') {
-        await startOpenClaw(userSelected, apiKey)
+        await startOpenClaw(userSelected, state.config)
       } else if (state.mode === 'opencode-desktop') {
         await startOpenCodeDesktop(userSelected, state.config)
       } else if (state.mode === 'opencode') {
-        const topology = buildProxyTopologyFromConfig(state.config)
-        if (isProxyEnabledForConfig(state.config) && topology.accounts.length > 0) {
-          await startProxyAndLaunch(userSelected, state.config)
-        } else {
-          if (isProxyEnabledForConfig(state.config) && topology.accounts.length === 0) {
-            console.log(chalk.yellow('  Proxy mode is enabled, but no proxy-capable API keys were found. Falling back to direct flow.'))
-            console.log()
-          }
-          await startOpenCode(userSelected, state.config)
-        }
+        await startOpenCode(userSelected, state.config)
       } else {
         await startExternalTool(state.mode, userSelected, state.config)
       }

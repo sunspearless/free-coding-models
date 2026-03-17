@@ -10,7 +10,6 @@
  *   - Overlay viewport management (scrolling, clamping, visibility)
  *   - Table viewport calculation
  *   - Sorting with pinned favorites and recommendations
- *   - Proxy status rendering
  *
  *   🎯 Key features:
  *   - Emoji-aware display width calculation without external dependencies
@@ -19,7 +18,6 @@
  *   - Overlay viewport helpers (clamp, slice, scroll target visibility)
  *   - Table viewport calculation with scroll indicators
  *   - Sorting with pinned favorites/recommendations at top
- *   - Proxy status formatting
  *
  *   → Functions:
  *   - `stripAnsi`: Remove ANSI color codes to estimate visible text width
@@ -32,13 +30,12 @@
  *   - `sliceOverlayLines`: Slice lines to viewport and pad with blanks
  *   - `calculateViewport`: Compute visible slice of model rows
  *   - `sortResultsWithPinnedFavorites`: Sort with pinned items at top
- *   - `renderProxyStatusLine`: Format proxy status for footer display
  *   - `adjustScrollOffset`: Clamp scrollOffset so cursor stays visible
  *
  *   📦 Dependencies:
  *   - chalk: Terminal colors and formatting
  *   - ../src/constants.js: OVERLAY_PANEL_WIDTH, TABLE_FIXED_LINES
- *   - ../src/utils.js: sortResults, getProxyStatusInfo
+ *   - ../src/utils.js: sortResults
  *
  *   ⚙️ Configuration:
  *   - OVERLAY_PANEL_WIDTH: Fixed width for overlay panels (from constants.js)
@@ -50,7 +47,7 @@
 
 import chalk from 'chalk'
 import { OVERLAY_PANEL_WIDTH, TABLE_FIXED_LINES } from './constants.js'
-import { sortResults, getProxyStatusInfo } from './utils.js'
+import { sortResults } from './utils.js'
 
 // 📖 stripAnsi: Remove ANSI color/control sequences to estimate visible text width before padding.
 // 📖 Strips CSI sequences (SGR colors) and OSC sequences (hyperlinks).
@@ -187,35 +184,6 @@ export function sortResultsWithPinnedFavorites(results, sortColumn, sortDirectio
     .sort((a, b) => (b.recommendScore || 0) - (a.recommendScore || 0))
   const nonSpecialRows = sortResults(results.filter((r) => !r.isFavorite && !r.isRecommended), sortColumn, sortDirection)
   return [...bothRows, ...recommendedRows, ...favoriteRows, ...nonSpecialRows]
-}
-
-// ─── Proxy status rendering ───────────────────────────────────────────────────
-
-// 📖 renderProxyStatusLine: Maps proxyStartupStatus + active proxy into a chalk-coloured footer line.
-// 📖 Always returns a non-empty string (no hidden states) so the footer row is always present.
-// 📖 Delegates state classification to the pure getProxyStatusInfo helper (testable in utils.js).
-export function renderProxyStatusLine(proxyStartupStatus, proxyInstance, proxyEnabled = false) {
-  const activeStatus = typeof proxyInstance?.getStatus === 'function' ? proxyInstance.getStatus() : null
-  const hasLiveProxy = Boolean(proxyInstance) && activeStatus?.running !== false
-  const info = getProxyStatusInfo(proxyStartupStatus, hasLiveProxy, proxyEnabled)
-  const neonGreen = chalk.rgb(57, 255, 20)
-  switch (info.state) {
-    case 'starting':
-      return chalk.dim('  ') + chalk.yellow('⟳ Proxy') + chalk.dim(' starting…')
-    case 'running': {
-      const resolvedPort = info.port ?? activeStatus?.port ?? activeStatus?.listeningPort ?? null
-      const resolvedAccountCount = info.accountCount ?? activeStatus?.accountCount ?? proxyInstance?._accounts?.length ?? null
-      const portPart  = resolvedPort ? chalk.dim(` :${resolvedPort}`) : ''
-      const acctPart  = resolvedAccountCount != null ? chalk.dim(` · ${resolvedAccountCount} account${resolvedAccountCount === 1 ? '' : 's'}`) : ''
-      return chalk.dim('  ') + neonGreen('🔀 Proxy running') + portPart + acctPart
-    }
-    case 'failed':
-      return chalk.dim('  ') + chalk.red('🔀 Proxy Stopped') + chalk.dim(` — ${info.reason}`)
-    case 'configured':
-      return chalk.dim('  ') + chalk.cyan('🔀 Proxy configured') + chalk.dim(' — OpenCode rotation')
-    default:
-      return chalk.dim('  ') + chalk.red('🔀 Proxy Stopped')
-  }
 }
 
 // ─── Scroll offset adjustment ──────────────────────────────────────────────────

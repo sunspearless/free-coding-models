@@ -36,7 +36,6 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { stripVTControlCharacters } from 'node:util'
 import { sources } from '../sources.js'
-import { loadRecentLogs } from '../src/log-reader.js'
 import {
   buildFixTasks,
   buildTestfcmReport,
@@ -44,6 +43,7 @@ import {
   createTestfcmRunId,
   extractJsonPayload,
   hasConfiguredKey,
+  pickTestfcmSelectionIndex,
   resolveTestfcmToolSpec,
 } from '../src/testfcm.js'
 
@@ -57,6 +57,8 @@ const DEFAULTS = {
   responseTimeoutMs: 20000,
   postEnterWaitMs: 3500,
   preflightTimeoutMs: 120000,
+  terminalColumns: 220,
+  terminalRows: 60,
 }
 
 function parseCliArgs(argv) {
@@ -115,6 +117,16 @@ function parseCliArgs(argv) {
       idx++
       continue
     }
+    if ((arg === '--term-columns' || arg === '--terminal-columns') && next) {
+      options.terminalColumns = Number.parseInt(next, 10) || DEFAULTS.terminalColumns
+      idx++
+      continue
+    }
+    if ((arg === '--term-rows' || arg === '--terminal-rows') && next) {
+      options.terminalRows = Number.parseInt(next, 10) || DEFAULTS.terminalRows
+      idx++
+      continue
+    }
   }
 
   return options
@@ -137,6 +149,8 @@ Options:
   --post-enter-wait-ms <ms>     Wait after Enter before sending the prompt
   --response-timeout-ms <ms>    Max wait for a model reply
   --preflight-timeout-ms <ms>   Max wait for --json preflight
+  --term-columns <n>            Target PTY width for expect (default: 220)
+  --term-rows <n>               Target PTY height for expect (default: 60)
   --help, -h                    Show this help
 `.trim())
 }
@@ -204,12 +218,10 @@ function buildIsolatedConfig(config, toolSpec) {
     sortColumn: 'avg',
     sortAsc: true,
     preferredToolMode: toolSpec.mode,
-    proxy: {
-      ...(isolated.settings.proxy && typeof isolated.settings.proxy === 'object' ? isolated.settings.proxy : {}),
-      enabled: toolSpec.prefersProxy === true,
-      syncToOpenCode: false,
-      daemonEnabled: false,
-    },
+    // 📖 Headless PTYs often start at 80 columns. Disable the warning so the
+    // 📖 runner can still reach the launcher path instead of timing out inside
+    // 📖 the width guardrail overlay.
+    disableWidthsWarning: true,
   }
 
   return isolated
@@ -254,14 +266,39 @@ function runInteractiveTranscript(repoRoot, toolSpec, env, options) {
   const expectScript = `
     log_user 1
     set timeout -1
+    proc send_repeated {sequence count delay_ms} {
+      for {set i 0} {$i < $count} {incr i} {
+        send -- $sequence
+        after $delay_ms
+      }
+    }
     set startup_wait $env(TESTFCM_STARTUP_WAIT_MS)
     set post_enter_wait $env(TESTFCM_POST_ENTER_WAIT_MS)
     set response_wait $env(TESTFCM_RESPONSE_TIMEOUT_MS)
     set prompt_text $env(TESTFCM_PROMPT)
+    set term_rows $env(TESTFCM_TERM_ROWS)
+    set term_cols $env(TESTFCM_TERM_COLUMNS)
+    set nav_up_count $env(TESTFCM_NAV_UP_COUNT)
+    set nav_down_count $env(TESTFCM_NAV_DOWN_COUNT)
 
-    spawn -noecho $env(TESTFCM_NODE) $env(TESTFCM_CLI) $env(TESTFCM_TOOL_FLAG) --no-telemetry
+    catch { stty rows $term_rows columns $term_cols }
+
+    spawn -noecho $env(TESTFCM_NODE) $env(TESTFCM_CLI) $env(TESTFCM_TOOL_FLAG) --disable-widths-warning --no-telemetry
+    catch { stty rows $term_rows columns $term_cols < $spawn_out(slave,name) }
+
+    after 1200 {
+      send -- "\\033"
+    }
 
     after $startup_wait {
+      send_repeated "\\033[A" $nav_up_count 4
+      after 120
+      send_repeated "\\033[B" $nav_down_count 30
+      after 180
+      send -- "\\r"
+    }
+
+    after [expr {$startup_wait + 2200}] {
       send -- "\\r"
     }
 
@@ -294,6 +331,10 @@ function runInteractiveTranscript(repoRoot, toolSpec, env, options) {
       TESTFCM_POST_ENTER_WAIT_MS: String(options.postEnterWaitMs),
       TESTFCM_RESPONSE_TIMEOUT_MS: String(options.responseTimeoutMs),
       TESTFCM_PROMPT: options.prompt,
+      TESTFCM_TERM_COLUMNS: String(options.terminalColumns),
+      TESTFCM_TERM_ROWS: String(options.terminalRows),
+      TESTFCM_NAV_UP_COUNT: '220',
+      TESTFCM_NAV_DOWN_COUNT: String(options.selectionIndex || 0),
     },
     encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
@@ -343,6 +384,7 @@ async function main() {
   let toolBinaryPath = null
   let transcript = ''
   let requestLogSummary = []
+  let selectionIndex = 0
 
   mkdirSync(reportDir, { recursive: true })
   mkdirSync(runDir, { recursive: true })
@@ -404,6 +446,9 @@ async function main() {
       ...process.env,
       HOME: isolatedHome,
       PATH: effectivePath,
+      TERM: process.env.TERM || 'xterm-256color',
+      LANG: process.env.LANG || 'en_US.UTF-8',
+      LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
     }
 
     const preflight = runJsonPreflight(repoRoot, toolSpec, childEnv, options.preflightTimeoutMs)
@@ -421,7 +466,10 @@ async function main() {
         task: 'Fix the `--json` path or the startup failure before trusting `/testfcm` selection heuristics.',
       })
     } else {
+      selectionIndex = pickTestfcmSelectionIndex(preflight.results, { preferProxy: false })
+      options.selectionIndex = selectionIndex
       notes.push(`JSON preflight saw ${preflight.results?.length || 0} model rows before the PTY launch.`)
+      notes.push(`Preflight-targeted row for Enter: #${selectionIndex + 1}.`)
     }
 
     const interactive = runInteractiveTranscript(repoRoot, toolSpec, childEnv, options)
@@ -433,27 +481,12 @@ async function main() {
 
     transcript = interactive.normalizedOutput
 
-    const requestLogPath = join(isolatedHome, '.free-coding-models', 'request-log.jsonl')
-    const daemonStdoutPath = join(isolatedHome, '.free-coding-models', 'daemon-stdout.log')
-    const daemonStderrPath = join(isolatedHome, '.free-coding-models', 'daemon-stderr.log')
-
-    const requestLogArtifact = copyArtifactIfExists(repoRoot, runDir, requestLogPath, 'request-log.jsonl')
-    if (requestLogArtifact) evidenceFiles.push(requestLogArtifact)
-    const daemonStdoutArtifact = copyArtifactIfExists(repoRoot, runDir, daemonStdoutPath, 'daemon-stdout.log')
-    if (daemonStdoutArtifact) evidenceFiles.push(daemonStdoutArtifact)
-    const daemonStderrArtifact = copyArtifactIfExists(repoRoot, runDir, daemonStderrPath, 'daemon-stderr.log')
-    if (daemonStderrArtifact) evidenceFiles.push(daemonStderrArtifact)
-
     for (const relativePath of toolSpec.configPaths) {
       const sourcePath = join(isolatedHome, relativePath)
       const fileName = relativePath.replace(/[\\/]+/g, '__')
       const copied = copyArtifactIfExists(repoRoot, runDir, sourcePath, fileName)
       if (copied) evidenceFiles.push(copied)
     }
-
-    requestLogSummary = loadRecentLogs({ logFile: requestLogPath, limit: 5 }).map((row) => (
-      `${row.time} ${row.status} ${row.provider}/${row.model} latency=${row.latency}ms tokens=${row.tokens}`
-    ))
 
     if (interactive.error) {
       findings.push({
