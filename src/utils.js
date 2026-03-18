@@ -464,7 +464,6 @@ export function parseArgs(argv) {
   const sortAscFlag = flags.includes('--asc')
   const hideUnconfigured = flags.includes('--hide-unconfigured')
   const showUnconfigured = flags.includes('--show-unconfigured')
-  const disableWidthsWarning = flags.includes('--disable-widths-warning')
 
   let tierFilter = tierValueIdx !== -1 ? args[tierValueIdx].toUpperCase() : null
   let sortColumn = sortValueIdx !== -1 ? args[sortValueIdx].toLowerCase() : null
@@ -501,7 +500,6 @@ export function parseArgs(argv) {
     pingInterval,
     hideUnconfigured,
     showUnconfigured,
-    disableWidthsWarning,
     premiumMode,
     // 📖 Profile system removed - API keys now persist permanently across all sessions
     recommendMode,

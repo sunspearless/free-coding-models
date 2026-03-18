@@ -17,6 +17,7 @@
  *   - `CELL_W` is derived from `COL_MS` and used by `msCell` / `spinCell`.
  *   - `TABLE_HEADER_LINES` + `TABLE_FOOTER_LINES` = `TABLE_FIXED_LINES` must stay in sync
  *     with the actual number of lines rendered by `renderTable()` in bin/.
+ *   - `WIDTH_WARNING_MIN_COLS` controls when the narrow-terminal startup warning appears.
  *   - Overlay background colours (chalk.bgRgb) make each overlay panel visually distinct.
  *
  * @functions
@@ -30,6 +31,7 @@
  *   FRAMES, TIER_CYCLE,
  *   SETTINGS_OVERLAY_BG, HELP_OVERLAY_BG, RECOMMEND_OVERLAY_BG, LOG_OVERLAY_BG,
  *   OVERLAY_PANEL_WIDTH,
+ *   WIDTH_WARNING_MIN_COLS,
  *   TABLE_HEADER_LINES, TABLE_FOOTER_LINES, TABLE_FIXED_LINES,
  *   msCell, spinCell
  *
@@ -82,6 +84,9 @@ export const LOG_OVERLAY_BG       = chalk.bgRgb(0, 0, 0)  // 📖 Dark blue-gree
 // 📖 OVERLAY_PANEL_WIDTH: fixed character width of all overlay panels so background
 // 📖 tint fills the panel consistently regardless of content length.
 export const OVERLAY_PANEL_WIDTH = 116
+
+// 📖 Narrow-terminal warning appears only below this width.
+export const WIDTH_WARNING_MIN_COLS = 80
 
 // 📖 Table row-budget constants — must stay in sync with renderTable()'s actual output.
 // 📖 If this drifts, model rows overflow and can push the title row out of view.

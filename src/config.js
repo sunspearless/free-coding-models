@@ -209,7 +209,6 @@ function normalizeSettingsSection(settings) {
   return {
     ...safeSettings,
     hideUnconfiguredModels: typeof safeSettings.hideUnconfiguredModels === 'boolean' ? safeSettings.hideUnconfiguredModels : true,
-    disableWidthsWarning: safeSettings.disableWidthsWarning === true,
     theme: ['dark', 'light', 'auto'].includes(safeSettings.theme) ? safeSettings.theme : 'auto',
   }
 }
@@ -230,7 +229,6 @@ function normalizeProfileSettings(settings) {
   return {
     ..._emptyProfileSettings(),
     ...safeSettings,
-    disableWidthsWarning: safeSettings.disableWidthsWarning === true,
     theme: ['dark', 'light', 'auto'].includes(safeSettings.theme) ? safeSettings.theme : 'auto',
   }
 }
@@ -843,7 +841,6 @@ export function _emptyProfileSettings() {
     pingInterval: 10000,  // 📖 default ms between pings in the steady "normal" mode
     hideUnconfiguredModels: true, // 📖 true = default to providers that are actually configured
     preferredToolMode: 'opencode', // 📖 remember the last Z-selected launcher across app restarts
-    disableWidthsWarning: false, // 📖 Disable widths warning (default off)
     theme: 'auto',        // 📖 'auto' follows the terminal/OS theme, override with 'dark' or 'light' if needed
   }
 }

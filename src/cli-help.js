@@ -26,14 +26,13 @@ const ANALYSIS_FLAGS = [
   { flag: '--json', description: 'Output results as JSON for scripts/automation' },
   { flag: '--tier <S|A|B|C>', description: 'Filter models by tier family' },
   { flag: '--recommend', description: 'Open Smart Recommend immediately on startup' },
-  { flag: '--premium', description: 'Show only S/S+ models with perfect health and good verdict' },
+  { flag: '--premium', description: 'Start with S-tier filter + verdict sort (you can reset it in-app)' },
   { flag: '--sort <column>', description: 'Sort by column (rank, tier, origin, model, ping, avg, swe, ctx, condition, verdict, uptime, stability, usage)' },
   { flag: '--desc | --asc', description: 'Set sort direction (descending or ascending)' },
   { flag: '--origin <provider>', description: 'Filter models by provider origin' },
   { flag: '--ping-interval <ms>', description: 'Override ping interval in milliseconds' },
   { flag: '--hide-unconfigured', description: 'Hide models without configured API keys' },
   { flag: '--show-unconfigured', description: 'Show all models regardless of API key config' },
-  { flag: '--disable-widths-warning', description: 'Disable terminal width warning' },
 ]
 
 const CONFIG_FLAGS = [

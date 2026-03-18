@@ -909,7 +909,7 @@ describe('renderTable outdated footer banner', () => {
     assert.doesNotMatch(output, /Update available:/)
   })
 
-  it('skips the narrow-terminal overlay when width warnings are disabled', () => {
+  it('skips the narrow-terminal overlay when terminal width is 80 columns or wider', () => {
     const output = renderTable(
       [mockResult()],
       0,
@@ -936,12 +936,107 @@ describe('renderTable outdated footer banner', () => {
       null,
       false,
       null,
-      true,
       true
     )
 
     assert.doesNotMatch(output, /Please maximize your terminal/)
     assert.match(output, /free-coding-models/)
+  })
+})
+
+describe('renderTable responsive column visibility', () => {
+  // 📖 Helper: render with a specific terminalCols value (all other params at sensible defaults)
+  const renderAtWidth = (cols) => renderTable(
+    [mockResult({ providerKey: 'nvidia', totalTokens: 0, pings: [{ ms: 200, code: '200' }] })],
+    0, 0, null, 'avg', 'asc', 10_000, Date.now(), 'opencode',
+    0, 0, 30, cols
+  )
+
+  // 📖 Full row width = 173 cols (12 data cols + 11 separators + 2 margin)
+  // 📖 Compact mode (154 cols): wPing 14→10, wAvg 11→8, wStab 11→8, wSource 14→10, wStatus 18→13
+  // 📖 Hide Rank: <154 | Hide Uptime: <145 | Hide Tier: <136 | Hide Stability: <127
+
+  it('shows all columns and full labels at very wide terminal (200 cols)', () => {
+    const output = renderAtWidth(200)
+    assert.match(output, /Rank/)
+    assert.match(output, /Tier/)
+    assert.match(output, /Up%/)
+    // 📖 Header renders StaBility (capital B for hotkey)
+    assert.match(output, /StaBility/)
+    assert.match(output, /Latest Ping/)
+    assert.match(output, /Avg Ping/)
+    // 📖 Full provider header 'PrOviDer' visible
+    assert.match(output, /Provider|PrOviDer/)
+  })
+
+  it('uses compact labels in compact mode (slightly narrow)', () => {
+    // 📖 At 154 cols, compact mode activates but no columns hidden yet
+    const output = renderAtWidth(154)
+    assert.match(output, /Lat\. P/)
+    assert.match(output, /Avg\. P/)
+    assert.doesNotMatch(output, /Latest Ping/)
+    assert.doesNotMatch(output, /Avg Ping/)
+    // 📖 Provider header should be compact 'PrOD…'
+    assert.match(output, /PrOD…/)
+    // 📖 All optional columns still visible
+    assert.match(output, /Rank/)
+    assert.match(output, /Up%/)
+  })
+
+  it('hides Rank column first when too narrow for compact', () => {
+    // 📖 At 145 cols, Rank is hidden (compact = 154, minus Rank col+sep = 145)
+    const output = renderAtWidth(145)
+    assert.doesNotMatch(output, /Rank/)
+    // 📖 Other always-visible columns should still be present
+    assert.match(output, /Model/)
+    assert.match(output, /Health/)
+  })
+
+  it('hides Rank and Up% at narrower widths', () => {
+    // 📖 At 136 cols, Rank and Uptime hidden (145 minus Up% col+sep = 136)
+    const output = renderAtWidth(136)
+    assert.doesNotMatch(output, /Rank/)
+    // 📖 Up% header is just 'Up%' — check it is NOT in the output
+    assert.doesNotMatch(output, /Up%/)
+    assert.match(output, /Model/)
+  })
+
+  it('hides Rank, Up%, and Tier at even narrower widths', () => {
+    // 📖 At 127 cols, Rank, Uptime, and Tier hidden (136 minus Tier col+sep = 127)
+    const output = renderAtWidth(127)
+    assert.doesNotMatch(output, /Rank/)
+    const lines = output.split('\n')
+    const headerLine = lines.find(l => l.includes('Model') && l.includes('Health'))
+    assert.ok(headerLine, 'header line should exist')
+    assert.ok(!headerLine.includes('Tier'), 'Tier should be hidden at 127 cols')
+  })
+
+  it('hides all 4 optional columns at very narrow widths', () => {
+    // 📖 At 116 cols, all 4 optional columns hidden (127 minus Stability col+sep = 116)
+    const output = renderAtWidth(116)
+    assert.doesNotMatch(output, /Rank/)
+    // 📖 Stability/StaB. should be gone
+    assert.doesNotMatch(output, /Stability/)
+    assert.doesNotMatch(output, /StaB\./)
+    // 📖 Core columns always present
+    assert.match(output, /Model/)
+    assert.match(output, /Health/)
+    assert.match(output, /Verdict/)
+  })
+
+  it('truncates provider name to 4 chars + ellipsis in compact mode', () => {
+    // 📖 In compact mode, provider names longer than 5 chars should be truncated
+    const output = renderAtWidth(164)
+    // 📖 'NIM' is only 3 chars so it should NOT be truncated
+    // 📖 But the header should show compact 'PrOD…'
+    assert.match(output, /PrOD…/)
+  })
+
+  it('truncates health status text in compact mode', () => {
+    // 📖 In compact mode, health text after 6 chars gets '…' appended
+    // 📖 '✅ UP' is short enough — no truncation expected
+    const output = renderAtWidth(164)
+    assert.match(output, /UP/)
   })
 })
 
@@ -1030,20 +1125,11 @@ describe('renderSettings provider test badges', () => {
     assert.match(output, /\[Missing Key 🔑\]/)
   })
 
-  it('shows Small Width Warnings as enabled by default', () => {
+  it('does not show the removed Small Width Warnings toggle in settings', () => {
     const renderSettings = buildSettingsRenderer({ apiKeys: {}, providers: {}, settings: {} })
     const output = renderSettings()
 
-    assert.match(output, /Small Width Warnings/)
-    assert.match(output, /Enabled/)
-  })
-
-  it('shows Small Width Warnings as disabled when the setting is on', () => {
-    const renderSettings = buildSettingsRenderer({ apiKeys: {}, providers: {}, settings: { disableWidthsWarning: true } })
-    const output = renderSettings()
-
-    assert.match(output, /Small Width Warnings/)
-    assert.match(output, /Disabled/)
+    assert.doesNotMatch(output, /Small Width Warnings/)
   })
 
   it('shows the global theme row with the resolved auto label', () => {
@@ -1193,6 +1279,11 @@ describe('parseArgs', () => {
     assert.equal(parseArgs(argv('--fiable')).fiableMode, true)
   })
 
+  it('detects --premium flag', () => {
+    assert.equal(parseArgs(argv('--premium')).premiumMode, true)
+    assert.equal(parseArgs(argv()).premiumMode, false)
+  })
+
   it('detects --opencode flag', () => {
     assert.equal(parseArgs(argv('--opencode')).openCodeMode, true)
   })
@@ -1282,6 +1373,7 @@ describe('cli help text', () => {
       '--amp',
       '--best',
       '--fiable',
+      '--premium',
       '--json',
       '--tier <S|A|B|C>',
       '--recommend',

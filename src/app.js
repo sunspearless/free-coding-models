@@ -105,7 +105,7 @@ import { usageForRow as _usageForRow } from '../src/usage-reader.js'
 import { buildProviderModelTokenKey, loadTokenUsageByProviderModel } from '../src/token-usage-reader.js'
 import { parseOpenRouterResponse, fetchProviderQuota as _fetchProviderQuotaFromModule } from '../src/provider-quota-fetchers.js'
 import { isKnownQuotaTelemetry } from '../src/quota-capabilities.js'
-import { ALT_ENTER, ALT_LEAVE, ALT_HOME, PING_TIMEOUT, PING_INTERVAL, FPS, COL_MODEL, COL_MS, CELL_W, FRAMES, TIER_CYCLE, SETTINGS_OVERLAY_BG, HELP_OVERLAY_BG, RECOMMEND_OVERLAY_BG, OVERLAY_PANEL_WIDTH, TABLE_HEADER_LINES, TABLE_FOOTER_LINES, TABLE_FIXED_LINES, msCell, spinCell } from '../src/constants.js'
+import { ALT_ENTER, ALT_LEAVE, ALT_HOME, PING_TIMEOUT, PING_INTERVAL, FPS, COL_MODEL, COL_MS, CELL_W, FRAMES, TIER_CYCLE, SETTINGS_OVERLAY_BG, HELP_OVERLAY_BG, RECOMMEND_OVERLAY_BG, OVERLAY_PANEL_WIDTH, TABLE_HEADER_LINES, TABLE_FOOTER_LINES, TABLE_FIXED_LINES, WIDTH_WARNING_MIN_COLS, msCell, spinCell } from '../src/constants.js'
 import { TIER_COLOR } from '../src/tier-colors.js'
 import { resolveCloudflareUrl, buildPingRequest, ping, extractQuotaPercent, getProviderQuotaPercentCached, usagePlaceholderForProvider } from '../src/ping.js'
 import { runFiableMode, filterByTierOrExit, fetchOpenRouterFreeModels } from '../src/analysis.js'
@@ -192,9 +192,8 @@ export async function runApp(cliArgs, config) {
   if (cliArgs.pingInterval) config.settings.pingInterval = cliArgs.pingInterval
   if (cliArgs.hideUnconfigured) config.settings.hideUnconfiguredModels = true
   if (cliArgs.showUnconfigured) config.settings.hideUnconfiguredModels = false
-  if (cliArgs.disableWidthsWarning) config.settings.disableWidthsWarning = true
 
-  // 📖 Apply premium mode: show only S‑tier models sorted by verdict
+  // 📖 Apply premium mode as an initial, user-resettable view preset.
   if (cliArgs.premiumMode) {
     config.settings.tierFilter = 'S'
     config.settings.sortColumn = 'verdict'
@@ -383,13 +382,11 @@ export async function runApp(cliArgs, config) {
     mode,                         // 📖 'opencode' or 'openclaw' — controls Enter action
     tierFilterMode: 0,            // 📖 Index into TIER_CYCLE (0=All, 1=S+, 2=S, ...)
     originFilterMode: 0,          // 📖 Index into ORIGIN_CYCLE (0=All, then providers)
-    premiumMode: cliArgs.premiumMode, // 📖 Special elite-only mode: S/S+ only, Health UP only, Perfect/Normal/Slow verdict only.
     hideUnconfiguredModels: config.settings?.hideUnconfiguredModels === true, // 📖 Hide providers with no configured API key when true.
-    disableWidthsWarning: config.settings?.disableWidthsWarning ?? false, // 📖 Cached for runtime checks; keep it in sync with config.settings.
       scrollOffset: 0,              // 📖 First visible model index in viewport
       terminalRows: process.stdout.rows || 24,  // 📖 Current terminal height
       terminalCols: process.stdout.columns || 80, // 📖 Current terminal width
-      widthWarningStartedAt: (process.stdout.columns || 80) < 166 && !(config.settings?.disableWidthsWarning ?? false) ? now : null, // 📖 Start immediately only when warnings are enabled in a narrow viewport.
+      widthWarningStartedAt: (process.stdout.columns || 80) < WIDTH_WARNING_MIN_COLS ? now : null, // 📖 Start immediately in very narrow viewports.
     widthWarningDismissed: false, // 📖 Esc hides the narrow-terminal warning early for the current narrow-width session.
     widthWarningShowCount: 0, // 📖 Counter for how many times the narrow-terminal warning has been shown (max 2 per session).
     // 📖 Settings screen state (P key opens it)
@@ -465,12 +462,10 @@ export async function runApp(cliArgs, config) {
   // 📖 Re-clamp viewport on terminal resize
   process.stdout.on('resize', () => {
     const prevCols = state.terminalCols
-    const widthsWarningDisabled = state.config.settings?.disableWidthsWarning === true
     state.terminalRows = process.stdout.rows || 24
     state.terminalCols = process.stdout.columns || 80
-    state.disableWidthsWarning = widthsWarningDisabled
-    if (state.terminalCols < 166 && !widthsWarningDisabled) {
-      if (prevCols >= 166 || state.widthWarningDismissed) {
+    if (state.terminalCols < WIDTH_WARNING_MIN_COLS) {
+      if (prevCols >= WIDTH_WARNING_MIN_COLS || state.widthWarningDismissed) {
         state.widthWarningStartedAt = Date.now()
         state.widthWarningDismissed = false
         state.widthWarningShowCount++ // 📖 Increment counter when showing the warning again
@@ -630,15 +625,10 @@ export async function runApp(cliArgs, config) {
       outputResults = outputResults.filter(r => ['S+', 'S', 'A+'].includes(r.tier))
     }
 
-    // 📖 Apply premium mode filter if specified: elite-only (S/S+, UP, Good Verdict)
+    // 📖 Apply premium mode as a preselected tier family in JSON mode as well.
     if (cliArgs.premiumMode) {
-      outputResults = outputResults.filter(r => {
-        const isEliteTier = r.tier === 'S' || r.tier === 'S+'
-        const isHealthUp = r.status === 'up'
-        const verdict = getVerdict(r)
-        const isGoodVerdict = ['Perfect', 'Normal', 'Slow'].includes(verdict)
-        return isEliteTier && isHealthUp && isGoodVerdict
-      })
+      const premiumTiers = TIER_LETTER_MAP.S || ['S+', 'S']
+      outputResults = outputResults.filter(r => premiumTiers.includes(r.tier))
     }
 
     // 📖 Sort by avg ping (ascending)
@@ -702,17 +692,6 @@ export async function runApp(cliArgs, config) {
       const originHide = activeOrigin !== null && r.providerKey !== activeOrigin
       r.hidden = tierHide || originHide
 
-      // 📖 Premium Mode: elite-only constraints (Health UP, Good Verdict, S/S+ only)
-      if (state.premiumMode && !r.hidden) {
-        const isEliteTier = r.tier === 'S' || r.tier === 'S+'
-        const isHealthUp = r.status === 'up'
-        const verdict = getVerdict(r)
-        const isGoodVerdict = ['Perfect', 'Normal', 'Slow'].includes(verdict)
-
-        if (!isEliteTier || !isHealthUp || !isGoodVerdict) {
-          r.hidden = true
-        }
-      }
     })
     return state.results
   }
@@ -900,8 +879,7 @@ export async function runApp(cliArgs, config) {
           state.settingsUpdateLatestVersion,
           false,
           state.startupLatestVersion,
-          state.versionAlertsEnabled,
-          state.config.settings?.disableWidthsWarning ?? false
+          state.versionAlertsEnabled
         )
       }
       tableContent = state.commandPaletteFrozenTable
@@ -933,8 +911,7 @@ export async function runApp(cliArgs, config) {
         state.settingsUpdateLatestVersion,
         false,
         state.startupLatestVersion,
-        state.versionAlertsEnabled,
-        state.config.settings?.disableWidthsWarning ?? false
+        state.versionAlertsEnabled
       )
     }
 
@@ -972,7 +949,7 @@ export async function runApp(cliArgs, config) {
   const initialVisible = state.results.filter(r => !r.hidden)
   state.visibleSorted = sortResultsWithPinnedFavorites(initialVisible, state.sortColumn, state.sortDirection)
 
-  process.stdout.write(ALT_HOME + renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, state.tierFilterMode, state.scrollOffset, state.terminalRows, state.terminalCols, state.originFilterMode, null, state.pingMode, state.pingModeSource, state.hideUnconfiguredModels, state.widthWarningStartedAt, state.widthWarningDismissed, state.widthWarningShowCount, state.settingsUpdateState, state.settingsUpdateLatestVersion, false, state.startupLatestVersion, state.versionAlertsEnabled, state.config.settings?.disableWidthsWarning ?? false))
+  process.stdout.write(ALT_HOME + renderTable(state.results, state.pendingPings, state.frame, state.cursor, state.sortColumn, state.sortDirection, state.pingInterval, state.lastPingTime, state.mode, state.tierFilterMode, state.scrollOffset, state.terminalRows, state.terminalCols, state.originFilterMode, null, state.pingMode, state.pingModeSource, state.hideUnconfiguredModels, state.widthWarningStartedAt, state.widthWarningDismissed, state.widthWarningShowCount, state.settingsUpdateState, state.settingsUpdateLatestVersion, false, state.startupLatestVersion, state.versionAlertsEnabled))
   if (process.stdout.isTTY) {
     process.stdout.flush && process.stdout.flush()
   }

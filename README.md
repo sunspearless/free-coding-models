@@ -133,7 +133,7 @@ free-coding-models --goose --tier S
 # "I want NVIDIA's top models only"
 free-coding-models --origin nvidia --tier S
 
-# "Show me only elite models that are currently healthy"
+# "Start with an elite-focused preset, then adjust filters live"
 free-coding-models --premium
 
 # "I want to script this — give me JSON"

@@ -93,8 +93,7 @@ export function createOverlayRenderers(state, deps) {
   function renderSettings() {
     const providerKeys = Object.keys(sources)
     const updateRowIdx = providerKeys.length
-    const widthWarningRowIdx = updateRowIdx + 1
-    const themeRowIdx = widthWarningRowIdx + 1
+    const themeRowIdx = updateRowIdx + 1
     const cleanupLegacyProxyRowIdx = themeRowIdx + 1
     const changelogViewRowIdx = cleanupLegacyProxyRowIdx + 1
     const EL = '\x1b[K'
@@ -220,14 +219,6 @@ export function createOverlayRenderers(state, deps) {
     const updateRow = `${bullet(updateCursor)}${themeColors.textBold(updateActionLabel).padEnd(44)} ${updateStatus}`
     cursorLineByRow[updateRowIdx] = lines.length
     lines.push(updateCursor ? themeColors.bgCursor(updateRow) : updateRow)
-    // 📖 Width warning visibility row for the startup narrow-terminal overlay.
-    const disableWidthsWarning = Boolean(state.config.settings?.disableWidthsWarning)
-    const widthWarningStatus = disableWidthsWarning
-      ? themeColors.errorBold('🙈 Disabled')
-      : themeColors.successBold('👁 Enabled')
-    const widthWarningRow = `${bullet(state.settingsCursor === widthWarningRowIdx)}${themeColors.textBold('Small Width Warnings').padEnd(44)} ${widthWarningStatus}`
-    cursorLineByRow[widthWarningRowIdx] = lines.length
-    lines.push(state.settingsCursor === widthWarningRowIdx ? themeColors.bgCursor(widthWarningRow) : widthWarningRow)
     const themeStatus = getThemeStatusLabel(activeThemeSetting())
     const themeStatusColor = themeStatus.includes('Dark') ? themeColors.warningBold : themeColors.info
     const themeRow = `${bullet(state.settingsCursor === themeRowIdx)}${themeColors.textBold('Global Theme').padEnd(44)} ${themeStatusColor(themeStatus)}`

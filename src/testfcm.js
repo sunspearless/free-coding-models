@@ -107,7 +107,7 @@ const TRANSCRIPT_FINDING_RULES = [
     title: 'PTY width warning blocked the TUI flow',
     severity: 'high',
     regex: /please maximize your terminal|terminal is too small|reduce font size or maximize width/i,
-    task: 'Run `/testfcm` with the width warning disabled in the isolated config or force a wider PTY before sending Enter.',
+    task: 'Run `/testfcm` with a wider PTY (at least 80 columns) before sending Enter.',
   },
   {
     id: 'tool_missing',

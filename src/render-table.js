@@ -41,13 +41,13 @@ import {
   msCell,
   spinCell,
   PING_INTERVAL,
+  WIDTH_WARNING_MIN_COLS,
   FRAMES
 } from './constants.js'
 import { themeColors, getProviderRgb, getTierRgb, getReadableTextRgb, getTheme } from './theme.js'
 import { TIER_COLOR } from './tier-colors.js'
 import { getAvg, getVerdict, getUptime, getStabilityScore, getVersionStatusInfo } from './utils.js'
 import { usagePlaceholderForProvider } from './ping.js'
-import { formatTokenTotalCompact } from './token-usage-reader.js'
 import { calculateViewport, sortResultsWithPinnedFavorites, padEndDisplay, displayWidth } from './render-helpers.js'
 import { getToolMeta } from './tool-metadata.js'
 import { PROXY_DISABLED_NOTICE } from './product-flags.js'
@@ -67,7 +67,7 @@ export const PROVIDER_COLOR = new Proxy({}, {
 })
 
 // ─── renderTable: mode param controls footer hint text (opencode vs openclaw) ─────────
-export function renderTable(results, pendingPings, frame, cursor = null, sortColumn = 'avg', sortDirection = 'asc', pingInterval = PING_INTERVAL, lastPingTime = Date.now(), mode = 'opencode', tierFilterMode = 0, scrollOffset = 0, terminalRows = 0, terminalCols = 0, originFilterMode = 0, legacyStatus = null, pingMode = 'normal', pingModeSource = 'auto', hideUnconfiguredModels = false, widthWarningStartedAt = null, widthWarningDismissed = false, widthWarningShowCount = 0, settingsUpdateState = 'idle', settingsUpdateLatestVersion = null, legacyFlag = false, startupLatestVersion = null, versionAlertsEnabled = true, disableWidthsWarning = false) {
+export function renderTable(results, pendingPings, frame, cursor = null, sortColumn = 'avg', sortDirection = 'asc', pingInterval = PING_INTERVAL, lastPingTime = Date.now(), mode = 'opencode', tierFilterMode = 0, scrollOffset = 0, terminalRows = 0, terminalCols = 0, originFilterMode = 0, legacyStatus = null, pingMode = 'normal', pingModeSource = 'auto', hideUnconfiguredModels = false, widthWarningStartedAt = null, widthWarningDismissed = false, widthWarningShowCount = 0, settingsUpdateState = 'idle', settingsUpdateLatestVersion = null, legacyFlag = false, startupLatestVersion = null, versionAlertsEnabled = true) {
   // 📖 Filter out hidden models for display
   const visibleResults = results.filter(r => !r.hidden)
 
@@ -146,25 +146,68 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
 
   // 📖 Column widths (generous spacing with margins)
   const COL_SEP = getColumnSpacing()
+  const SEP_W = 3  // ' │ ' display width
+  const ROW_MARGIN = 2  // left margin '  '
   const W_RANK = 6
   const W_TIER = 6
   const W_CTX = 6
   const W_SOURCE = 14
   const W_MODEL = 26
-  const W_SWE = 9
-  const W_PING = 14
-  const W_AVG = 11
+  const W_SWE = 6
   const W_STATUS = 18
   const W_VERDICT = 14
-  const W_STAB = 11
   const W_UPTIME = 6
-  const W_TOKENS = 7
+  // const W_TOKENS = 7 // Used column removed
   // const W_USAGE = 7 // Usage column removed
-  const MIN_TABLE_WIDTH = 166
+  const MIN_TABLE_WIDTH = WIDTH_WARNING_MIN_COLS
+
+  // 📖 Responsive column visibility: progressively hide least-useful columns
+  // 📖 and shorten header labels when terminal width is insufficient.
+  // 📖 Hiding order (least useful first): Rank → Up% → Tier → Stability
+  // 📖 Compact mode shrinks: Latest Ping→Lat. P (10), Avg Ping→Avg. P (8),
+  // 📖 Stability→StaB. (8), Provider→4chars+… (10), Health→6chars+… (13)
+  let wPing = 14
+  let wAvg = 11
+  let wStab = 11
+  let wSource = W_SOURCE
+  let wStatus = W_STATUS
+  let showRank = true
+  let showUptime = true
+  let showTier = true
+  let showStability = true
+  let isCompact = false
+
+  if (terminalCols > 0) {
+    // 📖 Dynamically compute needed row width from visible columns
+    const calcWidth = () => {
+      const cols = []
+      if (showRank) cols.push(W_RANK)
+      if (showTier) cols.push(W_TIER)
+      cols.push(W_SWE, W_CTX, W_MODEL, wSource, wPing, wAvg, wStatus, W_VERDICT)
+      if (showStability) cols.push(wStab)
+      if (showUptime) cols.push(W_UPTIME)
+      return ROW_MARGIN + cols.reduce((a, b) => a + b, 0) + (cols.length - 1) * SEP_W
+    }
+
+    // 📖 Step 1: Compact mode — shorten labels and reduce column widths
+    if (calcWidth() > terminalCols) {
+      isCompact = true
+      wPing = 10     // 'Lat. P' instead of 'Latest Ping'
+      wAvg = 8       // 'Avg. P' instead of 'Avg Ping'
+      wStab = 8      // 'StaB.' instead of 'Stability'
+      wSource = 10   // Provider truncated to 4 chars + '…'
+      wStatus = 13   // Health truncated after 6 chars + '…'
+    }
+    // 📖 Steps 2–5: Progressive column hiding (least useful first)
+    if (calcWidth() > terminalCols) showRank = false
+    if (calcWidth() > terminalCols) showUptime = false
+    if (calcWidth() > terminalCols) showTier = false
+    if (calcWidth() > terminalCols) showStability = false
+  }
   const warningDurationMs = 2_000
   const elapsed = widthWarningStartedAt ? Math.max(0, Date.now() - widthWarningStartedAt) : warningDurationMs
   const remainingMs = Math.max(0, warningDurationMs - elapsed)
-  const showWidthWarning = terminalCols > 0 && terminalCols < MIN_TABLE_WIDTH && !disableWidthsWarning && !widthWarningDismissed && widthWarningShowCount < 2 && remainingMs > 0
+  const showWidthWarning = terminalCols > 0 && terminalCols < MIN_TABLE_WIDTH && !widthWarningDismissed && widthWarningShowCount < 2 && remainingMs > 0
 
   if (showWidthWarning) {
     const lines = []
@@ -217,13 +260,16 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
   const modelH   = 'Model'
   const sweH     = sortColumn === 'swe' ? dir + ' SWE%' : 'SWE%'
   const ctxH     = sortColumn === 'ctx' ? dir + ' CTX' : 'CTX'
-  const pingH    = sortColumn === 'ping' ? dir + ' Latest Ping' : 'Latest Ping'
-  const avgH     = sortColumn === 'avg' ? dir + ' Avg Ping' : 'Avg Ping'
+  // 📖 Compact labels: 'Lat. P' / 'Avg. P' / 'StaB.' to save horizontal space
+  const pingLabel = isCompact ? 'Lat. P' : 'Latest Ping'
+  const avgLabel  = isCompact ? 'Avg. P' : 'Avg Ping'
+  const stabLabel = isCompact ? 'StaB.' : 'Stability'
+  const pingH    = sortColumn === 'ping' ? dir + ' ' + pingLabel : pingLabel
+  const avgH     = sortColumn === 'avg' ? dir + ' ' + avgLabel : avgLabel
   const healthH  = sortColumn === 'condition' ? dir + ' Health' : 'Health'
   const verdictH = sortColumn === 'verdict' ? dir + ' Verdict' : 'Verdict'
-  const stabH    = sortColumn === 'stability' ? dir + ' Stability' : 'Stability'
+  const stabH    = sortColumn === 'stability' ? dir + ' ' + stabLabel : stabLabel
   const uptimeH  = sortColumn === 'uptime' ? dir + ' Up%' : 'Up%'
-  const tokensH  = 'Used'
 
   // 📖 Helper to colorize first letter for keyboard shortcuts
   // 📖 IMPORTANT: Pad PLAIN TEXT first, then apply colors to avoid alignment issues
@@ -238,27 +284,31 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
   // 📖 Now colorize after padding is calculated on plain text
   const rankH_c    = colorFirst(rankH, W_RANK)
   const tierH_c    = colorFirst('Tier', W_TIER)
-  const originLabel = 'Provider'
+  const originLabel = isCompact ? 'PrOD…' : 'Provider'
   const originH_c  = sortColumn === 'origin'
-    ? themeColors.accentBold(originLabel.padEnd(W_SOURCE))
-    : (originFilterMode > 0 ? themeColors.accentBold(originLabel.padEnd(W_SOURCE)) : (() => {
+    ? themeColors.accentBold(originLabel.padEnd(wSource))
+    : (originFilterMode > 0 ? themeColors.accentBold(originLabel.padEnd(wSource)) : (() => {
       // 📖 Provider keeps O for sorting and D for provider-filter cycling.
-      const plain = 'PrOviDer'
-      const padding = ' '.repeat(Math.max(0, W_SOURCE - plain.length))
+      // 📖 In compact mode, shorten to 'PrOD…' (4 chars + ellipsis) to save space.
+      const plain = isCompact ? 'PrOD…' : 'PrOviDer'
+      const padding = ' '.repeat(Math.max(0, wSource - plain.length))
+      if (isCompact) {
+        return themeColors.dim('Pr') + themeColors.hotkey('O') + themeColors.hotkey('D') + themeColors.dim('…' + padding)
+      }
       return themeColors.dim('Pr') + themeColors.hotkey('O') + themeColors.dim('vi') + themeColors.hotkey('D') + themeColors.dim('er' + padding)
     })())
   const modelH_c   = colorFirst(modelH, W_MODEL)
   const sweH_c     = sortColumn === 'swe' ? themeColors.accentBold(sweH.padEnd(W_SWE)) : colorFirst(sweH, W_SWE)
   const ctxH_c     = sortColumn === 'ctx' ? themeColors.accentBold(ctxH.padEnd(W_CTX)) : colorFirst(ctxH, W_CTX)
-  const pingH_c    = sortColumn === 'ping' ? themeColors.accentBold(pingH.padEnd(W_PING)) : colorFirst('Latest Ping', W_PING)
-  const avgH_c     = sortColumn === 'avg' ? themeColors.accentBold(avgH.padEnd(W_AVG)) : colorFirst('Avg Ping', W_AVG)
-  const healthH_c  = sortColumn === 'condition' ? themeColors.accentBold(healthH.padEnd(W_STATUS)) : colorFirst('Health', W_STATUS)
+  const pingH_c    = sortColumn === 'ping' ? themeColors.accentBold(pingH.padEnd(wPing)) : colorFirst(pingLabel, wPing)
+  const avgH_c     = sortColumn === 'avg' ? themeColors.accentBold(avgH.padEnd(wAvg)) : colorFirst(avgLabel, wAvg)
+  const healthH_c  = sortColumn === 'condition' ? themeColors.accentBold(healthH.padEnd(wStatus)) : colorFirst('Health', wStatus)
   const verdictH_c = sortColumn === 'verdict' ? themeColors.accentBold(verdictH.padEnd(W_VERDICT)) : colorFirst(verdictH, W_VERDICT)
   // 📖 Custom colorization for Stability: highlight 'B' (the sort key) since 'S' is taken by SWE
-  const stabH_c    = sortColumn === 'stability' ? themeColors.accentBold(stabH.padEnd(W_STAB)) : (() => {
-    const plain = 'Stability'
-    const padding = ' '.repeat(Math.max(0, W_STAB - plain.length))
-    return themeColors.dim('Sta') + themeColors.hotkey('B') + themeColors.dim('ility' + padding)
+  const stabH_c    = sortColumn === 'stability' ? themeColors.accentBold(stabH.padEnd(wStab)) : (() => {
+    const plain = stabLabel
+    const padding = ' '.repeat(Math.max(0, wStab - plain.length))
+    return themeColors.dim('Sta') + themeColors.hotkey('B') + themeColors.dim((isCompact ? '.' : 'ility') + padding)
   })()
   // 📖 Up% sorts on U, so keep the highlighted shortcut in the shared yellow sort-key color.
   const uptimeH_c  = sortColumn === 'uptime' ? themeColors.accentBold(uptimeH.padEnd(W_UPTIME)) : (() => {
@@ -266,10 +316,15 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     const padding = ' '.repeat(Math.max(0, W_UPTIME - plain.length))
     return themeColors.hotkey('U') + themeColors.dim('p%' + padding)
   })()
-  const tokensH_c  = themeColors.dim(tokensH.padEnd(W_TOKENS))
   // 📖 Usage column removed from UI – no header or separator for it.
-  // Header without Usage column (column order: Rank, Tier, SWE%, CTX, Model, Provider, Latest Ping, Avg Ping, Health, Verdict, Stability, Up%, Used)
-  lines.push('  ' + rankH_c + COL_SEP + tierH_c + COL_SEP + sweH_c + COL_SEP + ctxH_c + COL_SEP + modelH_c + COL_SEP + originH_c + COL_SEP + pingH_c + COL_SEP + avgH_c + COL_SEP + healthH_c + COL_SEP + verdictH_c + COL_SEP + stabH_c + COL_SEP + uptimeH_c + COL_SEP + tokensH_c)
+  // 📖 Header row: conditionally include columns based on responsive visibility
+  const headerParts = []
+  if (showRank) headerParts.push(rankH_c)
+  if (showTier) headerParts.push(tierH_c)
+  headerParts.push(sweH_c, ctxH_c, modelH_c, originH_c, pingH_c, avgH_c, healthH_c, verdictH_c)
+  if (showStability) headerParts.push(stabH_c)
+  if (showUptime) headerParts.push(uptimeH_c)
+  lines.push('  ' + headerParts.join(COL_SEP))
 
 
 
@@ -311,9 +366,13 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     const num = themeColors.dim(String(r.idx).padEnd(W_RANK))
     const tier = tierFn(r.tier.padEnd(W_TIER))
     // 📖 Keep terminal view provider-specific so each row is monitorable per provider
+    // 📖 In compact mode, truncate provider name to 4 chars + '…'
     const providerNameRaw = sources[r.providerKey]?.name ?? r.providerKey ?? 'NIM'
     const providerName = normalizeOriginLabel(providerNameRaw, r.providerKey)
-    const source = themeColors.provider(r.providerKey, providerName.padEnd(W_SOURCE))
+    const providerDisplay = isCompact && providerName.length > 5
+      ? providerName.slice(0, 4) + '…'
+      : providerName
+    const source = themeColors.provider(r.providerKey, providerDisplay.padEnd(wSource))
     // 📖 Favorites: always reserve 2 display columns at the start of Model column.
     // 📖 🎯 (2 cols) for recommended, ⭐ (2 cols) for favorites, '  ' (2 spaces) for non-favorites — keeps alignment stable.
     const favoritePrefix = r.isRecommended ? '🎯' : r.isFavorite ? '⭐' : '  '
@@ -345,7 +404,7 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     // 📖 Keep the row-local spinner small and inline so users can still read the last measured latency.
     const buildLatestPingDisplay = (value) => {
       const spinner = r.isPinging ? ` ${FRAMES[frame % FRAMES.length]}` : ''
-      return `${value}${spinner}`.padEnd(W_PING)
+      return `${value}${spinner}`.padEnd(wPing)
     }
 
     // 📖 Latest ping - pings are objects: { ms, code }
@@ -353,7 +412,7 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     const latestPing = r.pings.length > 0 ? r.pings[r.pings.length - 1] : null
     let pingCell
     if (!latestPing) {
-      const placeholder = r.isPinging ? buildLatestPingDisplay('———') : '———'.padEnd(W_PING)
+      const placeholder = r.isPinging ? buildLatestPingDisplay('———') : '———'.padEnd(wPing)
       pingCell = themeColors.dim(placeholder)
     } else if (latestPing.code === '200') {
       // 📖 Success - show response time
@@ -364,7 +423,7 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
       pingCell = themeColors.dim(buildLatestPingDisplay(String(latestPing.ms)))
     } else {
       // 📖 Error or timeout - show "———" (error code is already in Status column)
-      const placeholder = r.isPinging ? buildLatestPingDisplay('———') : '———'.padEnd(W_PING)
+      const placeholder = r.isPinging ? buildLatestPingDisplay('———') : '———'.padEnd(wPing)
       pingCell = themeColors.dim(placeholder)
     }
 
@@ -372,10 +431,10 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     const avg = getAvg(r)
     let avgCell
     if (avg !== Infinity) {
-      const str = String(avg).padEnd(W_AVG)
+      const str = String(avg).padEnd(wAvg)
       avgCell = avg < 500 ? themeColors.metricGood(str) : avg < 1500 ? themeColors.metricWarn(str) : themeColors.metricBad(str)
     } else {
-      avgCell = themeColors.dim('———'.padEnd(W_AVG))
+      avgCell = themeColors.dim('———'.padEnd(wAvg))
     }
 
     // 📖 Status column - build plain text with emoji, pad, then colorize
@@ -423,7 +482,18 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
       statusText = '?'
       statusColor = themeColors.dim
     }
-    const status = statusColor(padEndDisplay(statusText, W_STATUS))
+    // 📖 In compact mode, truncate health text after 6 visible chars + '…' to fit wStatus
+    const statusDisplayText = isCompact ? (() => {
+      // 📖 Strip emoji prefix to measure text length, then truncate if needed
+      const plainText = statusText.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '')
+      if (plainText.length > 6) {
+        const emojiMatch = statusText.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*)/u)
+        const prefix = emojiMatch ? emojiMatch[1] : ''
+        return prefix + plainText.slice(0, 6) + '…'
+      }
+      return statusText
+    })() : statusText
+    const status = statusColor(padEndDisplay(statusDisplayText, wStatus))
 
     // 📖 Verdict column - use getVerdict() for stability-aware verdicts, then render with emoji
     const verdict = getVerdict(r)
@@ -479,15 +549,15 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     const stabScore = getStabilityScore(r)
     let stabCell
     if (stabScore < 0) {
-      stabCell = themeColors.dim('———'.padEnd(W_STAB))
+      stabCell = themeColors.dim('———'.padEnd(wStab))
     } else if (stabScore >= 80) {
-      stabCell = themeColors.metricGood(String(stabScore).padEnd(W_STAB))
+      stabCell = themeColors.metricGood(String(stabScore).padEnd(wStab))
     } else if (stabScore >= 60) {
-      stabCell = themeColors.metricOk(String(stabScore).padEnd(W_STAB))
+      stabCell = themeColors.metricOk(String(stabScore).padEnd(wStab))
     } else if (stabScore >= 40) {
-      stabCell = themeColors.metricWarn(String(stabScore).padEnd(W_STAB))
+      stabCell = themeColors.metricWarn(String(stabScore).padEnd(wStab))
     } else {
-      stabCell = themeColors.metricBad(String(stabScore).padEnd(W_STAB))
+      stabCell = themeColors.metricBad(String(stabScore).padEnd(wStab))
     }
 
     // 📖 Uptime column - percentage of successful pings
@@ -508,22 +578,21 @@ export function renderTable(results, pendingPings, frame, cursor = null, sortCol
     // 📖 Model text now mirrors the provider hue so provider affinity is visible
     // 📖 even before the eye reaches the Provider column.
     const nameCell = themeColors.provider(r.providerKey, name, { bold: isCursor })
-    const sourceCursorText = providerName.padEnd(W_SOURCE)
+    const sourceCursorText = providerDisplay.padEnd(wSource)
     const sourceCell = isCursor ? themeColors.provider(r.providerKey, sourceCursorText, { bold: true }) : source
 
     // 📖 Usage column removed from UI – no usage data displayed.
     // (We keep the logic but do not render it.)
     const usageCell = ''
 
-    // 📖 Used column — total historical prompt+completion tokens consumed for this
-    // 📖 exact provider/model pair, loaded from the local usage snapshot file at startup.
-    const tokenTotal = Number(r.totalTokens) || 0
-    const tokensCell = tokenTotal > 0
-      ? themeColors.metricOk(formatTokenTotalCompact(tokenTotal).padEnd(W_TOKENS))
-      : themeColors.dim('0'.padEnd(W_TOKENS))
-
-    // 📖 Build row with double space between columns (order: Rank, Tier, SWE%, CTX, Model, Provider, Latest Ping, Avg Ping, Health, Verdict, Stability, Up%, Used)
-    const row = '  ' + num + COL_SEP + tier + COL_SEP + sweCell + COL_SEP + ctxCell + COL_SEP + nameCell + COL_SEP + sourceCell + COL_SEP + pingCell + COL_SEP + avgCell + COL_SEP + status + COL_SEP + speedCell + COL_SEP + stabCell + COL_SEP + uptimeCell + COL_SEP + tokensCell
+    // 📖 Build row: conditionally include columns based on responsive visibility
+    const rowParts = []
+    if (showRank) rowParts.push(num)
+    if (showTier) rowParts.push(tier)
+    rowParts.push(sweCell, ctxCell, nameCell, sourceCell, pingCell, avgCell, status, speedCell)
+    if (showStability) rowParts.push(stabCell)
+    if (showUptime) rowParts.push(uptimeCell)
+    const row = '  ' + rowParts.join(COL_SEP)
 
     if (isCursor) {
       lines.push(themeColors.bgModelCursor(row))

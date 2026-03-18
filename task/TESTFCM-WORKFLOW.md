@@ -40,7 +40,7 @@ The runner lives at [scripts/testfcm-runner.mjs](../scripts/testfcm-runner.mjs).
 It will:
 
 1. copy `~/.free-coding-models.json` into an isolated HOME inside `task/artifacts/<run-id>/home`
-2. normalize the copied config so only configured providers stay enabled, the proxy uses an OS-assigned port, and width warnings stay disabled in headless runs
+2. normalize the copied config so only configured providers stay enabled and the proxy uses an OS-assigned port
 3. force a predictable launch setup for the chosen tool
 4. run a `--json` preflight to catch obvious startup regressions
 5. start the real TUI in a PTY via the system `expect` command

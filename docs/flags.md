@@ -29,7 +29,7 @@ Start the TUI pre-configured to a specific tool. Press `Enter` on a model to aut
 | Flag | Type | Description |
 |------|------|-------------|
 | `--best` | boolean | Show only top‑tier models (A+, S, S+). |
-| `--premium` | boolean | Show only S/S+ models that are currently UP with a good verdict (`Perfect`, `Normal`, or `Slow`). |
+| `--premium` | boolean | Start with an elite-focused preset (tier filter `S` + `verdict` sort). This is fully resettable in the TUI. |
 | `--tier <S\|A\|B\|C>` | value | Filter by tier family — `S` = S+/S, `A` = A+/A/A-, `B` = B+/B, `C` = C only. |
 | `--origin <provider>` | value | Filter by provider name (e.g. `nvidia`, `groq`, `cerebras`). |
 | `--hide-unconfigured` | boolean | Hide models whose provider has no API key configured. |
@@ -62,7 +62,6 @@ Start the TUI pre-configured to a specific tool. Press `Enter` on a model to aut
 | Flag | Type | Description |
 |------|------|-------------|
 | `--ping-interval <ms>` | value | Override the ping interval in milliseconds (e.g. `--ping-interval 5000`). |
-| `--disable-widths-warning` | boolean | Suppress the terminal-too-narrow warning banner. |
 | `--no-telemetry` | boolean | Disable anonymous usage telemetry for this session. |
 | `--help`, `-h` | boolean | Print the full help text with all flags and exit. |
 
@@ -83,7 +82,7 @@ free-coding-models --json | jq '.[] | select(.avgPing < 500)'
 # Most reliable model right now
 free-coding-models --fiable
 
-# Elite models currently healthy
+# Start with an elite-focused preset (resettable in-app)
 free-coding-models --premium
 
 # Sort by SWE score descending

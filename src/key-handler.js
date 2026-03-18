@@ -32,6 +32,7 @@ import { loadConfig, replaceConfigContents } from './config.js'
 import { cleanupLegacyProxyArtifacts } from './legacy-proxy-cleanup.js'
 import { cycleThemeSetting, detectActiveTheme } from './theme.js'
 import { buildCommandPaletteEntries, filterCommandPaletteEntries } from './command-palette.js'
+import { WIDTH_WARNING_MIN_COLS } from './constants.js'
 
 // 📖 Some providers need an explicit probe model because the first catalog entry
 // 📖 is not guaranteed to be accepted by their chat endpoint.
@@ -445,38 +446,6 @@ export function createKeyHandler(ctx) {
       type: 'success',
       msg: 'ℹ️ No discontinued proxy config was found. You are already on the stable direct-provider setup.',
     }
-  }
-
-  // 📖 Keep the width-warning runtime state synced with the persisted Settings toggle
-  // 📖 so the overlay reacts immediately when the user enables or disables it.
-  function syncWidthsWarningState() {
-    const widthsWarningDisabled = state.config.settings?.disableWidthsWarning === true
-    state.disableWidthsWarning = widthsWarningDisabled
-
-    if (widthsWarningDisabled) {
-      state.widthWarningStartedAt = null
-      state.widthWarningDismissed = false
-      return
-    }
-
-    state.widthWarningShowCount = 0
-    if ((state.terminalCols || 80) < 166) {
-      state.widthWarningStartedAt = Date.now()
-      state.widthWarningDismissed = false
-      return
-    }
-
-    state.widthWarningStartedAt = null
-    state.widthWarningDismissed = false
-  }
-
-  // 📖 Toggle the width-warning setting and apply the effect immediately instead
-  // 📖 of waiting for a resize or restart.
-  function toggleWidthsWarningSetting() {
-    if (!state.config.settings) state.config.settings = {}
-    state.config.settings.disableWidthsWarning = !state.config.settings.disableWidthsWarning
-    syncWidthsWarningState()
-    saveConfig(state.config)
   }
 
   // 📖 Theme switches need to update both persisted preference and the live
@@ -1384,8 +1353,7 @@ export function createKeyHandler(ctx) {
     if (state.settingsOpen) {
       const providerKeys = Object.keys(sources)
       const updateRowIdx = providerKeys.length
-      const widthWarningRowIdx = updateRowIdx + 1
-      const themeRowIdx = widthWarningRowIdx + 1
+      const themeRowIdx = updateRowIdx + 1
       const cleanupLegacyProxyRowIdx = themeRowIdx + 1
       const changelogViewRowIdx = cleanupLegacyProxyRowIdx + 1
         // 📖 Profile system removed - API keys now persist permanently across all sessions
@@ -1530,12 +1498,6 @@ export function createKeyHandler(ctx) {
           return
         }
 
-        // 📖 Widths Warning toggle (Enter to toggle)
-        if (state.settingsCursor === widthWarningRowIdx) {
-          toggleWidthsWarningSetting()
-          return
-        }
-
         if (state.settingsCursor === themeRowIdx) {
           cycleGlobalTheme()
           return
@@ -1579,11 +1541,6 @@ export function createKeyHandler(ctx) {
           cycleGlobalTheme()
           return
         }
-        // 📖 Widths Warning toggle (disable/enable)
-        if (state.settingsCursor === widthWarningRowIdx) {
-          toggleWidthsWarningSetting()
-          return
-        }
         // 📖 Profile system removed - API keys now persist permanently across all sessions
 
         // 📖 Toggle enabled/disabled for selected provider
@@ -1598,7 +1555,6 @@ export function createKeyHandler(ctx) {
       if (key.name === 't') {
         if (
           state.settingsCursor === updateRowIdx
-          || state.settingsCursor === widthWarningRowIdx
           || state.settingsCursor === themeRowIdx
           || state.settingsCursor === cleanupLegacyProxyRowIdx
           || state.settingsCursor === changelogViewRowIdx
@@ -1805,7 +1761,7 @@ export function createKeyHandler(ctx) {
     }
 
     // 📖 Esc can dismiss the narrow-terminal warning immediately without quitting the app.
-    if (key.name === 'escape' && state.terminalCols > 0 && state.terminalCols < 166) {
+    if (key.name === 'escape' && state.terminalCols > 0 && state.terminalCols < WIDTH_WARNING_MIN_COLS) {
       state.widthWarningDismissed = true
       return
     }

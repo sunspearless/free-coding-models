@@ -218,10 +218,6 @@ function buildIsolatedConfig(config, toolSpec) {
     sortColumn: 'avg',
     sortAsc: true,
     preferredToolMode: toolSpec.mode,
-    // 📖 Headless PTYs often start at 80 columns. Disable the warning so the
-    // 📖 runner can still reach the launcher path instead of timing out inside
-    // 📖 the width guardrail overlay.
-    disableWidthsWarning: true,
   }
 
   return isolated
